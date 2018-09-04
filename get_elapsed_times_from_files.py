@@ -1,0 +1,71 @@
+import os, datetime, time, glob
+
+def get_num_structs_in_trainxyz_file(path, napc):
+    '''
+    napc: int
+        number of atoms per unit cell. Currently the program only
+        supports training sets with the same napc for each
+        structure.
+    '''
+    train_xyz_fpath = path[:path.rfind('/')] + '/train.xyz'
+    with open(train_xyz_fpath) as f:
+        lines = f.readlines()
+    num_structs = float(len(lines)) / float(napc + 2)
+    if int(num_structs) != num_structs:
+        raise IOError('check napc, each struct must have the same napc. napc = ' + str(napc))
+    return int(num_structs)
+
+def get_num_seconds_from_time_str(time_str):
+    #decimal place number of seconds mess up formatting so add it separately.
+    if '.' in time_str:
+        fractional_sec = float(time_str[time_str.rfind('.'):])
+        time_str = time_str.split('.')[0]
+    else:
+        fractional_sec = 0.0
+    try:
+        x = time.strptime(time_str,'%H:%M:%S')
+    except:
+        x = time.strptime(time_str,'%M:%S')
+    #Gives the number of seconds (type=float) represented by time_str
+    secs = datetime.timedelta(hours=x.tm_hour,minutes=x.tm_min,seconds=x.tm_sec).total_seconds()
+    return secs + fractional_sec
+
+def get_elapsed_time(fpath):
+    with open(fpath) as f:
+        lines = f.readlines()
+    secs = None
+    for line in lines:
+        if 'elapsed' in line:
+            split_line = line.split()
+            time_str = split_line[2][:split_line[2].find('elapsed')]
+            secs = get_num_seconds_from_time_str(time_str)
+    if secs is None:
+        raise ValueError('secs is None. fpath: ' + fpath)
+    return secs
+
+def average_data_dct(data_dct):
+    for key in data_dct:
+        data_dct[key] = round(sum(data_dct[key]) / float(len(data_dct[key])), 2)
+    return data_dct
+
+def main():
+    #python2
+    napm = 13
+    nmpc = 2
+    napc = napm * nmpc
+    param_paths = glob.glob('random/*')
+    for param_path in param_paths:
+        starting_search_dir = param_path
+        search_fname = 'soaps.out'
+        fpaths = [os.path.join(dp, f) for dp, dn, filenames in os.walk(starting_search_dir) for f in filenames if search_fname in f]
+        data_dct = {}
+        for fpath in fpaths:
+            num_structs = get_num_structs_in_trainxyz_file(fpath, napc)
+            secs = get_elapsed_time(fpath)
+            if num_structs not in data_dct:
+                data_dct[num_structs] = [secs]
+            else:
+                data_dct[num_structs].append(secs)
+        avg_data_dct = average_data_dct(data_dct)
+        print(avg_data_dct)
+main()
