@@ -42,7 +42,7 @@ def add_element_to_array(data, el, axis=0):
 
     return data
 
-def get_ref_and_test_rankings(test_energies, ref_energies, test_pct):
+def get_ref_and_test_rankings(test_energies, ref_energies, test_num_structs):
     #Sort by energy
     ref_energies = sort_by_col(ref_energies, col=1)
     test_energies = sort_by_col(test_energies, col=1)
@@ -52,7 +52,7 @@ def get_ref_and_test_rankings(test_energies, ref_energies, test_pct):
     #print('ref_energies', ref_energies)
     #print('test_energies', test_energies)
 
-    save_path = 'ranking_list_raw_test_pct_' + str(test_pct) + '.csv'
+    save_path = 'ranking_list_raw_test_num_structs_' + str(test_num_structs) + '.csv'
     ranking_list = [[np.where(ref_energies == r)[0][0], np.where(test_energies == r)[0][0]] for r in range(n_rows)]
     #print(ranking_list)
     file_utils.write_rows_to_csv(save_path, ranking_list, delimiter=' ')
@@ -109,17 +109,17 @@ def main():
                 param_string += '-'
  
         param_path = os.path.join(selection_method_path, param_string)
-        for test_pct in inst.get_list(sname, 'test_pcts'):
-            test_pct_path = os.path.join(param_path, 'test_pct_' + str(test_pct))
-            for train_pct in inst.get_list(sname, 'train_pcts'):
-                train_pct_path = os.path.join(test_pct_path, 'train_pct_' + str(train_pct))
+        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
 
-                #For each train pct, average the R^2 of each replica and print this to 
-                # a file along with test_pct and train_pct.
+                #For each train num_structs, average the R^2 of each replica and print this to 
+                # a file along with test_num_structs and train_num_structs.
                 r_sqrds = np.array([])
 
                 for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_pct_path, 'test_num_' + str(test_num))
+                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
                     for train_num in range(int(inst.get(sname, 'train_num'))):
                         train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
 
@@ -127,11 +127,11 @@ def main():
                         ref_energies, pred_energies = \
                                    get_ref_and_pred_energies_from_test_results(test_results_path)
 
-                        test_ranking, ref_ranking = get_ref_and_test_rankings(pred_energies, ref_energies, test_pct)
+                        test_ranking, ref_ranking = get_ref_and_test_rankings(pred_energies, ref_energies, test_num_structs)
                         r_sqrd = get_r_sqrd_from_rankings(test_ranking, ref_ranking)
                         r_sqrds = np.append(r_sqrds, r_sqrd)
                 if len(pred_energies) != 0:
                     mean_r_sqrd = np.mean(r_sqrds)
-                    file_utils.write_row_to_csv('average_kernel_reranking_' param_string + '_test_pct_' + str(test_pct) + '.csv', [train_pct, mean_r_sqrd])
+                    file_utils.write_row_to_csv('average_kernel_reranking_' param_string + '_test_num_structs_' + str(test_num_structs) + '.csv', [train_num_structs, mean_r_sqrd])
 main()
 

@@ -10,9 +10,9 @@ def create_new_working_dirs(inst):
         of the same parameter sets and create new ones. The structure
         of the folders are designed for k-fold cross-validation:
         Root: selection_method, depth=1: param_path, depth=2:
-        test_pct, depth=3: train_pct, depth=4: test_num, depth=5:
+        test_num_structs, depth=3: train_num_structs, depth=4: test_num, depth=5:
         train_num. (where num indicates the replica where a different
-        test/train set was selected but with the same pct's.
+        test/train set was selected but with the same num_structs's.
     '''
     sname = 'cross_val'
     for selection_method in inst.get_list(sname, 'selection_methods'):
@@ -39,14 +39,14 @@ def create_new_working_dirs(inst):
             if answer == 'y':
                 file_utils.rm(param_path, recursive=True)
         file_utils.mkdir_if_DNE(param_path)
-        for test_pct in inst.get_list(sname, 'test_pcts'):
-            test_pct_path = os.path.join(param_path, 'test_pct_' + str(test_pct))
-            file_utils.mkdir_if_DNE(test_pct_path)
-            for train_pct in inst.get_list(sname, 'train_pcts'):
-                train_pct_path = os.path.join(test_pct_path, 'train_pct_' + str(train_pct))
-                file_utils.mkdir_if_DNE(train_pct_path)
+        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+            file_utils.mkdir_if_DNE(test_num_structs_path)
+            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
+                file_utils.mkdir_if_DNE(train_num_structs_path)
                 for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_pct_path, 'test_num_' + str(test_num))
+                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
                     file_utils.mkdir_if_DNE(test_num_path)
                     for train_num in range(int(inst.get(sname, 'train_num'))):
                         train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
@@ -124,7 +124,7 @@ def create_train_test_splits(inst):
 
     Purpose: Create train.xyz and test.xyz (which contain a collection of structures) from
         the larger xyz file with all structures (all_xyz_structs_fname) according to
-        test_pct and train_pct. Note, train_pct is percentage remaining after taking away
+        test_num_structs and train_num_structs. Note, train_num_structs is percentage remaining after taking away
         the test structures. Place train.xyz and test.xyz in the already-created 
         working directories (created by create_new_working_dirs()).
     '''
@@ -153,19 +153,23 @@ def create_train_test_splits(inst):
                 param_string += '-'
         param_path = os.path.join(selection_method_path, param_string)
 
-        for test_pct in inst.get_list(sname, 'test_pcts'):
-            test_pct_path = os.path.join(param_path, 'test_pct_' + str(test_pct))
+        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
 
-            test_size = int((float(test_pct) / 100.0) * total_dataset_size)
+            test_size = int(test_num_structs)
 
-            for train_pct in inst.get_list(sname, 'train_pcts'):
-                train_pct_path = os.path.join(test_pct_path, 'train_pct_' + str(train_pct))
+            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
 
-                train_size = int((float(train_pct) / 100.0) * (total_dataset_size - test_size))
+                train_size = int(train_num_structs)
+                if train_size > total_dataset_size - test_size:
+                    raise ValueError('train_size must be <= total_dataset_size - test_size. train_size: ' +
+                                    train_size + ' test_size: ' + test_size + ' total_dataset_size: ' + 
+                                    total_dataset_size)
 
 
                 for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_pct_path, 'test_num_' + str(test_num))
+                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
 
                     if selection_method == 'random':
                         test_idx_list = random.sample(range(total_dataset_size), test_size)

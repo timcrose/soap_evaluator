@@ -46,7 +46,7 @@ def add_element_to_array(data, el, axis=0):
 
     return data
 
-def get_ref_and_test_rankings(selection_method, param_string, test_energies, ref_energies, test_pct):
+def get_ref_and_test_rankings(selection_method, param_string, test_energies, ref_energies, test_num_structs):
     #Sort by energy
     ref_energies = sort_by_col(ref_energies, col=1)
     test_energies = sort_by_col(test_energies, col=1)
@@ -57,7 +57,7 @@ def get_ref_and_test_rankings(selection_method, param_string, test_energies, ref
     #print('ref_energies', ref_energies)
     #print('test_energies', test_energies)
 
-    save_path = 'ranking_list_raw_' + selection_method + '_' + param_string + '_test_pct_' + str(test_pct) + '.csv'
+    save_path = 'ranking_list_raw_' + selection_method + '_' + param_string + '_test_num_structs_' + str(test_num_structs) + '.csv'
     ranking_list = [[np.where(ref_energies == r)[0][0], np.where(test_energies == r)[0][0]] for r in range(n_rows)]
     #print(ranking_list)
     file_utils.write_rows_to_csv(save_path, ranking_list, delimiter=' ')
@@ -126,19 +126,18 @@ def main():
         for param_string in param_strings:
             param_path = os.path.join(selection_method_path, param_string)
 
-            test_pct_paths = file_utils.glob(os.path.join(param_path, '*'))
-            for test_pct_path in test_pct_paths:
-                test_pct = os.path.basename(test_pct_path)
-                train_pct_paths = file_utils.glob(os.path.join(test_pct_path, '*'))
-                for train_pct_path in train_pct_paths:
-                    train_pct = float(os.path.basename(train_pct_path).split('_')[2]) / 100.0
-                    total_num_structs = get_num_structs_in_xyz_file(path=inst.get('cross_val', 'all_xyz_structs_fname'))
-                    train_num_structs = int(train_pct * total_num_structs)
-                    #For each train pct, average the R^2 of each replica and print this to 
-                    # a file along with test_pct and train_pct.
+            test_num_structs_paths = file_utils.glob(os.path.join(param_path, '*'))
+            for test_num_structs_path in test_num_structs_paths:
+                test_num_structs = int(os.path.basename(test_num_structs_path).split('_')[-1])
+                train_num_structs_paths = file_utils.glob(os.path.join(test_num_structs_path, '*'))
+                for train_num_structs_path in train_num_structs_paths:
+                    train_num_structs = int(os.path.basename(train_num_structs_path).split('_')[-1]) 
+                    #total_num_structs = get_num_structs_in_xyz_file(path=inst.get('cross_val', 'all_xyz_structs_fname'))
+                    #For each train num_structs, average the R^2 of each replica and print this to 
+                    # a file along with test_num_structs and train_num_structs.
                     r_sqrds = np.array([])
 
-                    test_num_paths = file_utils.glob(os.path.join(train_pct_path, '*'))
+                    test_num_paths = file_utils.glob(os.path.join(train_num_structs_path, '*'))
                     for test_num_path in test_num_paths:
                         train_num_paths = file_utils.glob(os.path.join(test_num_path, '*'))
                         for train_num_path in train_num_paths:
@@ -147,13 +146,13 @@ def main():
                                        get_ref_and_pred_energies_from_test_results(test_results_path)
                             if ref_energies is None or pred_energies is None:
                                 continue
-                            test_ranking, ref_ranking = get_ref_and_test_rankings(selection_method, param_string, pred_energies, ref_energies, test_pct)
+                            test_ranking, ref_ranking = get_ref_and_test_rankings(selection_method, param_string, pred_energies, ref_energies, test_num_structs)
                             if test_ranking is None or ref_ranking is None:
                                 continue
                             r_sqrd = get_r_sqrd_from_rankings(test_ranking, ref_ranking)
                             r_sqrds = np.append(r_sqrds, r_sqrd)
                     if pred_energies is not None and len(pred_energies) != 0:
                         mean_r_sqrd = np.mean(r_sqrds)
-                        file_utils.write_row_to_csv('average_kernel_reranking_' + selection_method + '_' + param_string + '_test_pct_' + str(test_pct) + '.csv', [train_num_structs, mean_r_sqrd])
+                        file_utils.write_row_to_csv('average_kernel_reranking_' + selection_method + '_' + param_string + '_test_num_structs_' + str(test_num_structs) + '.csv', [train_num_structs, mean_r_sqrd])
 main()
 

@@ -44,18 +44,18 @@ def main():
                 param_string += '-'
 
         param_path = os.path.join(selection_method_path, param_string)
-        for test_pct in inst.get_list(sname, 'test_pcts'):
-            test_pct_path = os.path.join(param_path, 'test_pct_' + str(test_pct))
-            for train_pct in inst.get_list(sname, 'train_pcts'):
-                train_pct_path = os.path.join(test_pct_path, 'train_pct_' + str(train_pct))
+        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
 
-                #For each train pct, combine the RMSE's of each replica and print this to 
-                # a file along with test_pct and train_pct.
+                #For each train num_structs, combine the RMSE's of each replica and print this to 
+                # a file along with test_num_structs and train_num_structs.
                 ref_energies = np.array([])
                 pred_energies = np.array([])
 
                 for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_pct_path, 'test_num_' + str(test_num))
+                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
                     for train_num in range(int(inst.get(sname, 'train_num'))):
                         train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
 
@@ -65,10 +65,10 @@ def main():
 
                         ref_energies = np.append(ref_energies, ref_energies_single_file)
                         pred_energies = np.append(pred_energies, pred_energies_single_file)
-                print(test_pct, train_pct)
+                print(test_num_structs, train_num_structs)
                 print(len(pred_energies))
                 print(ref_energies)
                 if len(pred_energies) != 0:
                     rmse = sqrt(mean_squared_error(ref_energies, pred_energies))
-                    file_utils.write_row_to_csv('learning_curve_' + param_string + '_test_pct_' + str(test_pct) + '.csv', [train_pct, rmse])
+                    file_utils.write_row_to_csv('learning_curve_' + param_string + '_test_num_structs_' + str(test_num_structs) + '.csv', [train_num_structs, rmse])
 main()

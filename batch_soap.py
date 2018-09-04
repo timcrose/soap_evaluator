@@ -189,12 +189,12 @@ def soap_workflow(params):
                 param_string += '-'
 
         param_path = os.path.join(selection_method_path, param_string)
-        for test_pct in inst.get_list(sname, 'test_pcts'):
-            test_pct_path = os.path.join(param_path, 'test_pct_' + str(test_pct))
-            for train_pct in inst.get_list(sname, 'train_pcts'):
-                train_pct_path = os.path.join(test_pct_path, 'train_pct_' + str(train_pct))
+        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
                 for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_pct_path, 'test_num_' + str(test_num))
+                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
                     for train_num in range(int(inst.get(sname, 'train_num'))):
                         train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
  
