@@ -165,7 +165,7 @@ def create_train_test_splits(inst):
                 if train_size > total_dataset_size - test_size:
                     raise ValueError('train_size must be <= total_dataset_size - test_size. train_size: ' +
                                     str(train_size) + ' test_size: ' + str(test_size) + ' total_dataset_size: ' + 
-                                    total_dataset_size)
+                                    str(total_dataset_size))
 
 
                 for test_num in range(int(inst.get(sname, 'test_num'))):
