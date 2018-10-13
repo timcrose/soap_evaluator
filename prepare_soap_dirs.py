@@ -1,4 +1,4 @@
-import instruct, os, shutil, sys, random, copy
+import instruct, os, shutil, sys, random, copy, itertools
 sys.path.append('/home/trose/python_utils')
 import file_utils2 as file_utils
 
@@ -139,62 +139,67 @@ def create_train_test_splits(inst):
 
     structs_idx, total_dataset_size, lines_per_struct = get_dataset_size(dataset)
 
+    params_to_get = ['n','l','c','g']
+    params_list = [inst.get_list('train_kernel', p) for p in params_to_get]
+    params_combined_iterable = itertools.product(*params_list)
+
     for selection_method in inst.get_list(sname, 'selection_methods'):
         selection_method_path = os.path.abspath(selection_method)
 
-        params_to_get = ['n','l','c','g']
-        param_string = ''
-        for p in params_to_get:
-            param_string += p
-            param_to_add = inst.get('train_kernel', p)
-            #c and g have floats in the name in the kernel file.
-            #Format is n8-l8-c4.0-g0.3
-            if p == 'g' or p == 'c':
-                param_to_add = str(float(param_to_add))
-            param_string += param_to_add
-            if p != params_to_get[-1]:
-                param_string += '-'
-        param_path = os.path.join(selection_method_path, param_string)
+        for params_set in params_combined_iterable:
+            param_string = ''
+            for i, p in enumerate(params_to_get):
+                param_string += p
+                param_to_add = str(params_set[i])
+                #c and g have floats in the name in the kernel file.
+                #Format is n8-l8-c4.0-g0.3
+                if p == 'g' or p == 'c':
+                    param_to_add = str(float(param_to_add))
+                param_string += param_to_add
+                if p != params_to_get[-1]:
+                    param_string += '-'
 
-        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
-            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+            param_path = os.path.join(selection_method_path, param_string)
 
-            test_size = int(test_num_structs)
+            for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+                test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
 
-            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
-                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
+                test_size = int(test_num_structs)
 
-                train_size = int(train_num_structs)
-                if train_size > total_dataset_size - test_size:
-                    raise ValueError('train_size must be <= total_dataset_size - test_size. train_size: ' +
-                                    str(train_size) + ' test_size: ' + str(test_size) + ' total_dataset_size: ' + 
-                                    str(total_dataset_size))
+                for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                    train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
+
+                    train_size = int(train_num_structs)
+                    if train_size > total_dataset_size - test_size:
+                        raise ValueError('train_size must be <= total_dataset_size - test_size. train_size: ' +
+                                       str(train_size) + ' test_size: ' + str(test_size) + ' total_dataset_size: ' + 
+                                       str(total_dataset_size))
 
 
-                for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
+                    for test_num in range(int(inst.get(sname, 'test_num'))):
+                        test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
 
-                    if selection_method == 'random':
-                        test_idx_list = random.sample(range(total_dataset_size), test_size)
-                    test_idx_lines = []
-                    for test_idx in test_idx_list:
-                        test_idx_lines += dataset[test_idx * lines_per_struct : (test_idx + 1) * lines_per_struct]
-
-                    for train_num in range(int(inst.get(sname, 'train_num'))):
-                        train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
-                        
                         if selection_method == 'random':
-                            train_idx_list = []
-                            while len(train_idx_list) != train_size:
-                                random_idx = random.randint(0, len(structs_idx) - 1)
-                                if random_idx not in test_idx_list:
-                                    train_idx_list.append(random_idx)
-                        train_idx_lines = []
-                        for train_idx in train_idx_list:
-                            train_idx_lines += dataset[train_idx * lines_per_struct : (train_idx + 1) * lines_per_struct]
+                            test_idx_list = random.sample(range(total_dataset_size), test_size)
+                        test_idx_lines = []
+                        for test_idx in test_idx_list:
+                            test_idx_lines += dataset[test_idx * lines_per_struct : (test_idx + 1) * lines_per_struct]
 
-                        write_separate_test_and_train_xyz_files(test_idx_lines, train_idx_lines, train_num_path)
-                        write_separate_test_and_train_en_dats(train_num_path)
+                        for train_num in range(int(inst.get(sname, 'train_num'))):
+                            train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
+                        
+                            if selection_method == 'random':
+                                train_idx_list = []
+                                while len(train_idx_list) != train_size:
+                                    random_idx = random.randint(0, len(structs_idx) - 1)
+                                    if random_idx not in test_idx_list:
+                                        train_idx_list.append(random_idx)
+                            train_idx_lines = []
+                            for train_idx in train_idx_list:
+                                train_idx_lines += dataset[train_idx * lines_per_struct : (train_idx + 1) * lines_per_struct]
+
+                            write_separate_test_and_train_xyz_files(test_idx_lines, train_idx_lines, train_num_path)
+                            write_separate_test_and_train_en_dats(train_num_path)
 def main():
     '''
     Interprets the instruction and calls the respective attributes of inst

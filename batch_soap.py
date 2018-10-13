@@ -1,4 +1,4 @@
-import os, sys, random, time, subprocess, glob
+import os, sys, random, time, subprocess, glob, itertools
 import instruct
 
 class SetUpParams():
@@ -174,15 +174,19 @@ def soap_workflow(params):
     sname = 'cross_val'
     #original working dir
     owd = os.getcwd()
+
+    params_to_get = ['n','l','c','g']
+    params_list = [inst.get_list('train_kernel', p) for p in params_to_get]
+    params_combined_iterable = itertools.product(*params_list)
+
     for selection_method in inst.get_list(sname, 'selection_methods'):
         selection_method_path = os.path.join(owd, selection_method)
 
-        params_to_get = ['n','l','c','g']
-        for i in range(len(inst.get_list('train_kernel', 'n'))):
+        for params_set in params_combined_iterable:
             param_string = ''
-            for p in params_to_get:
+            for i, p in enumerate(params_to_get):
                 param_string += p
-                param_to_add = inst.get_list('train_kernel', p)[i]
+                param_to_add = str(params_set[i])
                 #c and g have floats in the name in the kernel file.
                 #Format is n8-l8-c4.0-g0.3
                 if p == 'g' or p == 'c':
@@ -198,8 +202,8 @@ def soap_workflow(params):
                     train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
                     for test_num in range(int(inst.get(sname, 'test_num'))):
                         test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
-                      for train_num in range(int(inst.get(sname, 'train_num'))):
-                          train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
+                        for train_num in range(int(inst.get(sname, 'train_num'))):
+                            train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
      
                             if not check_for_and_write_lockfile(train_num_path):
                                 continue
