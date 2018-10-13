@@ -1,6 +1,6 @@
 import instruct, os, shutil, sys, random, copy
 sys.path.append('/home/trose/python_utils')
-import file_utils
+import file_utils2 as file_utils
 
 def create_new_working_dirs(inst):
     '''
@@ -14,44 +14,47 @@ def create_new_working_dirs(inst):
         train_num. (where num indicates the replica where a different
         test/train set was selected but with the same num_structs's.
     '''
+    owd = os.getcwd()
     sname = 'cross_val'
     for selection_method in inst.get_list(sname, 'selection_methods'):
         file_utils.mkdir_if_DNE(selection_method)
-        selection_method_path = os.path.abspath(selection_method)
-        
-        params_to_get = ['n','l','c','g']
-        param_string = ''
-        for p in params_to_get:
-            param_string += p
-            param_to_add = inst.get('train_kernel', p)
-            #c and g have floats in the name in the kernel file.
-            #Format is n8-l8-c4.0-g0.3
-            if p == 'g' or p == 'c':
-                param_to_add = str(float(param_to_add))
-            param_string += param_to_add
-            if p != params_to_get[-1]:
-                param_string += '-'
-        param_path = os.path.join(selection_method_path, param_string)
-        if os.path.isdir(param_path):
-            answer = raw_input('Really delete all contents of ' + param_path 
-                           + '? (y/n)')
-            
-            if answer == 'y':
-                file_utils.rm(param_path, recursive=True)
-        file_utils.mkdir_if_DNE(param_path)
-        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
-            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
-            file_utils.mkdir_if_DNE(test_num_structs_path)
-            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
-                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
-                file_utils.mkdir_if_DNE(train_num_structs_path)
-                for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
-                    file_utils.mkdir_if_DNE(test_num_path)
-                    for train_num in range(int(inst.get(sname, 'train_num'))):
-                        train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
-                        file_utils.mkdir_if_DNE(train_num_path)
+        selection_method_path = os.path.join(owd, selection_method)
 
+        params_to_get = ['n','l','c','g']
+        for i in range(len(inst.get_list('train_kernel', 'n'))):
+            param_string = ''
+            for p in params_to_get:
+                param_string += p
+                param_to_add = inst.get_list('train_kernel', p)[i]
+                #c and g have floats in the name in the kernel file.
+                #Format is n8-l8-c4.0-g0.3
+                if p == 'g' or p == 'c':
+                    param_to_add = str(float(param_to_add))
+                param_string += param_to_add
+                if p != params_to_get[-1]:
+                    param_string += '-'
+
+            param_path = os.path.join(selection_method_path, param_string)
+            if os.path.isdir(param_path):
+                answer = raw_input('Really delete all contents of ' + param_path 
+                               + '? (y/n)')
+            
+                if answer == 'y':
+                    file_utils.rm(param_path, recursive=True)
+            file_utils.mkdir_if_DNE(param_path)
+            for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+                test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+                file_utils.mkdir_if_DNE(test_num_structs_path)
+                for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                    train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
+                    file_utils.mkdir_if_DNE(train_num_structs_path)
+                    for test_num in range(int(inst.get(sname, 'test_num'))):
+                        test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
+                        file_utils.mkdir_if_DNE(test_num_path)
+                        for train_num in range(int(inst.get(sname, 'train_num'))):
+                            train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
+                            file_utils.mkdir_if_DNE(train_num_path)
+    
 def read_dataset(dataset_fname):
     '''
     dataset_fname: str

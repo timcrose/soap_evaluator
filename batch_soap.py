@@ -172,61 +172,64 @@ def soap_workflow(params):
     '''
     inst = params.inst
     sname = 'cross_val'
+    #original working dir
+    owd = os.getcwd()
     for selection_method in inst.get_list(sname, 'selection_methods'):
-        selection_method_path = os.path.abspath(selection_method)
+        selection_method_path = os.path.join(owd, selection_method)
 
         params_to_get = ['n','l','c','g']
-        param_string = ''
-        for p in params_to_get:
-            param_string += p
-            param_to_add = inst.get('train_kernel', p)
-            #c and g have floats in the name in the kernel file.
-            #Format is n8-l8-c4.0-g0.3
-            if p == 'g' or p == 'c':
-                param_to_add = str(float(param_to_add))
-            param_string += param_to_add
-            if p != params_to_get[-1]:
-                param_string += '-'
+        for i in range(len(inst.get_list('train_kernel', 'n'))):
+            param_string = ''
+            for p in params_to_get:
+                param_string += p
+                param_to_add = inst.get_list('train_kernel', p)[i]
+                #c and g have floats in the name in the kernel file.
+                #Format is n8-l8-c4.0-g0.3
+                if p == 'g' or p == 'c':
+                    param_to_add = str(float(param_to_add))
+                param_string += param_to_add
+                if p != params_to_get[-1]:
+                    param_string += '-'
 
-        param_path = os.path.join(selection_method_path, param_string)
-        for test_num_structs in inst.get_list(sname, 'test_num_structs'):
-            test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
-            for train_num_structs in inst.get_list(sname, 'train_num_structs'):
-                train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
-                for test_num in range(int(inst.get(sname, 'test_num'))):
-                    test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
-                    for train_num in range(int(inst.get(sname, 'train_num'))):
-                        train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
- 
-                        if not check_for_and_write_lockfile(train_num_path):
-                            continue
-                        os.chdir(train_num_path)
+            param_path = os.path.join(selection_method_path, param_string)
+            for test_num_structs in inst.get_list(sname, 'test_num_structs'):
+                test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))
+                for train_num_structs in inst.get_list(sname, 'train_num_structs'):
+                    train_num_structs_path = os.path.join(test_num_structs_path, 'train_num_structs_' + str(train_num_structs))
+                    for test_num in range(int(inst.get(sname, 'test_num'))):
+                        test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
+                      for train_num in range(int(inst.get(sname, 'train_num'))):
+                          train_num_path = os.path.join(test_num_path, 'train_num_' + str(train_num))
+     
+                            if not check_for_and_write_lockfile(train_num_path):
+                                continue
+                            os.chdir(train_num_path)
                         
-                        #Create kernel
-                        outfile_path = inst.get('train_kernel', 'outfile')
-                        with open(outfile_path, 'w') as f:
-                            step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
-                            out_1, err_1 = step_1.communicate()
+                            #Create kernel
+                            outfile_path = inst.get('train_kernel', 'outfile')
+                            with open(outfile_path, 'w') as f:
+                                step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
+                                out_1, err_1 = step_1.communicate()
                         
-                        #krr
-                        params.setup_krr_params()
-                        outfile_path = inst.get('krr', 'outfile')
-                        with open(outfile_path, 'w') as f:
-                            step_2 = subprocess.Popen(params.krr_param_list, stdout=f, stderr=f)
-                            out_2, err_2 = step_2.communicate()
+                           #krr
+                           params.setup_krr_params()
+                           outfile_path = inst.get('krr', 'outfile')
+                           with open(outfile_path, 'w') as f:
+                               step_2 = subprocess.Popen(params.krr_param_list, stdout=f, stderr=f)
+                                out_2, err_2 = step_2.communicate()
                         
-                        #create rect file
-                        outfile_path = inst.get('create_rect', 'outfile')
-                        with open(outfile_path, 'w') as f:
-                            step_3 = subprocess.Popen(params.create_rect_param_list, stdout=f, stderr=f)
-                            out_3, err_3 = step_3.communicate()
+                           #create rect file
+                            outfile_path = inst.get('create_rect', 'outfile')
+                            with open(outfile_path, 'w') as f:
+                                step_3 = subprocess.Popen(params.create_rect_param_list, stdout=f, stderr=f)
+                                out_3, err_3 = step_3.communicate()
                         
-                        #perform krr test
-                        params.setup_krr_test_params()
-                        outfile_path = inst.get('krr_test', 'outfile')
-                        with open(outfile_path, 'w') as f:
-                            step_4 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
-                            out_4, err_4 = step_4.communicate()
+                            #perform krr test
+                            params.setup_krr_test_params()
+                            outfile_path = inst.get('krr_test', 'outfile')
+                            with open(outfile_path, 'w') as f:
+                               step_4 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
+                               out_4, err_4 = step_4.communicate()
 
 
 if __name__ == '__main__':
