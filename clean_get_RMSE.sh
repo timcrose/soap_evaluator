@@ -1,1 +1,2 @@
-rm learning_curve*.csv
+cwd=`pwd`
+rm ${cwd}/learning_curve*.csv

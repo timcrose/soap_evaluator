@@ -1,7 +1,7 @@
 import os, datetime, time, glob, sys
 import instruct
 sys.path.append('/home/trose/python_utils')
-import file_utils
+import file_utils2 as file_utils
 
 def get_num_structs_in_trainxyz_file(path, napc):
     '''
@@ -63,10 +63,11 @@ def main():
     inst_path = sys.argv[-1]
     inst = instruct.Instruct()
     inst.load_instruction_from_file(inst_path)
-
+    
+    owd = os.getcwd()
     sname = 'cross_val'
     for selection_method in inst.get_list(sname, 'selection_methods'):
-        selection_method_path = os.path.abspath(selection_method)
+        selection_method_path = os.path.join(owd, selection_method)
         param_strings = [os.path.basename(param_path) for param_path in file_utils.glob(os.path.join(selection_method_path, '*'))]
         for param_string in param_strings:
             param_path = os.path.join(selection_method_path, param_string)

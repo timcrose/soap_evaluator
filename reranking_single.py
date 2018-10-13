@@ -3,7 +3,7 @@ import numpy as np
 from scipy import stats
 import instruct
 sys.path.append('/home/trose/python_utils')
-import file_utils
+import file_utils2 as file_utils
 
 def sort_by_col(data, col):
     '''
@@ -91,9 +91,10 @@ def main():
     inst = instruct.Instruct()
     inst.load_instruction_from_file(inst_path)
 
+    owd = os.getcwd()
     sname = 'cross_val'
     for selection_method in inst.get_list(sname, 'selection_methods'):
-        selection_method_path = os.path.abspath(selection_method)
+        selection_method_path = os.path.join(owd, selection_method)
        
         params_to_get = ['n','l','c','g']
         param_string = ''

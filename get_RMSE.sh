@@ -1,2 +1,3 @@
-./clean_get_RMSE.sh
-python get_RMSE.py soap.conf
+cwd=`pwd`
+#./clean_get_RMSE.sh
+python ${soap_dir}/get_RMSE.py ${cwd}/soap.conf
