@@ -16,16 +16,20 @@ def create_new_working_dirs(inst):
     '''
     owd = os.getcwd()
     sname = 'cross_val'
+
+    params_to_get = ['n','l','c','g']
+    params_list = [inst.get_list('train_kernel', p) for p in params_to_get]
+    params_combined_iterable = itertools.product(*params_list)
+
     for selection_method in inst.get_list(sname, 'selection_methods'):
         file_utils.mkdir_if_DNE(selection_method)
         selection_method_path = os.path.join(owd, selection_method)
 
-        params_to_get = ['n','l','c','g']
-        for i in range(len(inst.get_list('train_kernel', 'n'))):
+        for params_set in params_combined_iterable:
             param_string = ''
-            for p in params_to_get:
+            for i, p in enumerate(params_to_get):
                 param_string += p
-                param_to_add = inst.get_list('train_kernel', p)[i]
+                param_to_add = str(params_set[i])
                 #c and g have floats in the name in the kernel file.
                 #Format is n8-l8-c4.0-g0.3
                 if p == 'g' or p == 'c':
@@ -38,7 +42,7 @@ def create_new_working_dirs(inst):
             if os.path.isdir(param_path):
                 answer = raw_input('Really delete all contents of ' + param_path 
                                + '? (y/n)')
-            
+
                 if answer == 'y':
                     file_utils.rm(param_path, recursive=True)
             file_utils.mkdir_if_DNE(param_path)
@@ -121,7 +125,7 @@ def write_separate_test_and_train_en_dats(wdir_path):
     os.system("grep energy test.xyz | awk '{print $10}' | sed s/energy=//g > en_test.dat")
     os.system("grep energy train.xyz | awk '{print $10}' | sed s/energy=//g > en_train.dat")
 
-def create_train_test_splits(inst):
+def create_train_test_splits(inst, owd):
     '''
     inst: contains conf file params
 
@@ -144,7 +148,7 @@ def create_train_test_splits(inst):
     params_combined_iterable = itertools.product(*params_list)
 
     for selection_method in inst.get_list(sname, 'selection_methods'):
-        selection_method_path = os.path.abspath(selection_method)
+        selection_method_path = os.path.join(owd, selection_method)
 
         for params_set in params_combined_iterable:
             param_string = ''
@@ -204,12 +208,14 @@ def main():
     '''
     Interprets the instruction and calls the respective attributes of inst
     '''
+    owd = os.getcwd()
+
     inst_path = sys.argv[-1]
     inst = instruct.Instruct()
     inst.load_instruction_from_file(inst_path)
 
     create_new_working_dirs(inst)
-    create_train_test_splits(inst)
+    create_train_test_splits(inst, owd)
 
 if __name__ == '__main__':
     main()
