@@ -158,6 +158,35 @@ def check_for_and_write_lockfile(wdir):
         f.write('locked')
     return True
 
+def modify_soap_hyperparam_list(param_list, params_to_get, params_set):
+    '''
+    param_list: str
+        List of params to pass to glosim to compute kernel.
+        Ex:
+        ['time', 'python', '/home/trose/epfl/epfl/glosim/glosim.py', 
+         'train.xyz', '--periodic', '-n', '[5, 8]', '-l', '[1]',
+         '-c', '[1]', '-g', '[0.7, 1.1]', '--kernel', 'average',
+         '--nonorm', '--np', '1']
+    params_to_get: list
+        The hyperparams: ['n','l','c','g']
+    params_set: iterable
+        The value for each hyperparam in params_to_get
+
+    Return: list
+        modified param string list
+    Purpose: If you define lists of possible soap hyperparams, then
+        you can't get the particular set until you are running
+        through the for loops in soap_workflow. So, we need to 
+        replace the list of values for each hyperparam by 
+        the current desired value of that hyperparam.
+    '''
+    for i, p in enumerate(params_to_get):
+        pos_p = param_list.index('-' + p)
+        param_list = param_list[: pos_p + 1] + \
+              [str(params_set[i])] + \
+              param_list[pos_p + 2 :]
+    return param_list
+
 def soap_workflow(params):
     '''
     params: SetUpParams object
@@ -212,19 +241,25 @@ def soap_workflow(params):
                             #Create kernel
                             outfile_path = inst.get('train_kernel', 'outfile')
                             with open(outfile_path, 'w') as f:
+                                params.soap_param_list = modify_soap_hyperparam_list(params.soap_param_list,
+                                      params_to_get, params_set)
+
                                 step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
                                 out_1, err_1 = step_1.communicate()
                         
-                           #krr
-                           params.setup_krr_params()
-                           outfile_path = inst.get('krr', 'outfile')
-                           with open(outfile_path, 'w') as f:
-                               step_2 = subprocess.Popen(params.krr_param_list, stdout=f, stderr=f)
+                            #krr
+                            params.setup_krr_params()
+                            outfile_path = inst.get('krr', 'outfile')
+                            with open(outfile_path, 'w') as f:
+                                step_2 = subprocess.Popen(params.krr_param_list, stdout=f, stderr=f)
                                 out_2, err_2 = step_2.communicate()
                         
-                           #create rect file
+                            #create rect file
                             outfile_path = inst.get('create_rect', 'outfile')
                             with open(outfile_path, 'w') as f:
+                                params.create_rect_param_list = modify_soap_hyperparam_list(params.create_rect_param_list,
+                                      params_to_get, params_set)
+
                                 step_3 = subprocess.Popen(params.create_rect_param_list, stdout=f, stderr=f)
                                 out_3, err_3 = step_3.communicate()
                         
@@ -232,8 +267,8 @@ def soap_workflow(params):
                             params.setup_krr_test_params()
                             outfile_path = inst.get('krr_test', 'outfile')
                             with open(outfile_path, 'w') as f:
-                               step_4 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
-                               out_4, err_4 = step_4.communicate()
+                                step_4 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
+                                out_4, err_4 = step_4.communicate()
 
 
 if __name__ == '__main__':
