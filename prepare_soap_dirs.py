@@ -1,6 +1,6 @@
 import instruct, os, shutil, sys, random, copy, itertools
 sys.path.append('/home/trose/python_utils')
-import file_utils2 as file_utils
+import file_utils
 
 def create_new_working_dirs(inst):
     '''
