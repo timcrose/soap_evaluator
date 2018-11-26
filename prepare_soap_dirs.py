@@ -44,7 +44,7 @@ def create_new_working_dirs(inst):
                                + '? (y/n)')
 
                 if answer == 'y':
-                    file_utils.rm(param_path, recursive=True)
+                    file_utils.rm(param_path)
             file_utils.mkdir_if_DNE(param_path)
             for test_num_structs in inst.get_list(sname, 'test_num_structs'):
                 test_num_structs_path = os.path.join(param_path, 'test_num_structs_' + str(test_num_structs))

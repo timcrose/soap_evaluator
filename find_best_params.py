@@ -3,7 +3,8 @@ sys.path.append('/home/trose/python_utils')
 import file_utils
 
 def main():
-    reranking_files = file_utils.glob('average*reranking*.csv')
+    pwd = file_utils.os.getcwd()
+    reranking_files = file_utils.glob(file_utils.os.path.join(pwd, 'average*reranking*.csv'))
     best_rsqrd = 0
     for reranking_file in reranking_files:
         red_csv = file_utils.read_csv(reranking_file)
