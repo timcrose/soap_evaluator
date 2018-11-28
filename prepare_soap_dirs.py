@@ -124,6 +124,8 @@ def write_separate_test_and_train_en_dats(wdir_path):
     os.chdir(os.path.abspath(wdir_path))
     os.system("grep energy test.xyz | awk '{print $10}' | sed s/energy=//g > en_test.dat")
     os.system("grep energy train.xyz | awk '{print $10}' | sed s/energy=//g > en_train.dat")
+    #os.system("grep energy test.xyz | awk '{print $11}' | sed s/nmpc=//g > nmpc_test.dat")
+    #os.system("grep energy train.xyz | awk '{print $11}' | sed s/nmpc=//g > nmpc_train.dat")
 
 def create_train_test_splits(inst, owd):
     '''
