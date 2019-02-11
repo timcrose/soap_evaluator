@@ -35,7 +35,7 @@ class SetUpParams():
                                       ['alchemy_rules','--alchemy_rules'],
                                       ['kernel','--kernel'],
                                       ['peratom', '--peratom'],
-                                      ['unsoap', '--unsoap']
+                                      ['unsoap', '--unsoap'],
                                       ['normalize_global', '--normalize_global'],
                                       ['onpy', '--onpy'],
                                       ['permanenteps','--permanenteps'],
