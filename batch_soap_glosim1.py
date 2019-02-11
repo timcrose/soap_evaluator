@@ -49,8 +49,7 @@ class SetUpParams():
                                       ['prefix','--prefix'],
                                       ['livek','--livek'],
                                       ['lowmem','--lowmem'],
-                                      ['restart','--restart'],
-                                      ['sek', '-sek']
+                                      ['restart','--restart']
                                      ]
 
         for option, option_string in glosim_soap_options:
@@ -248,6 +247,7 @@ def soap_workflow(params):
                                 step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
                                 out_1, err_1 = step_1.communicate()
                         
+                            '''
                             #krr
                             params.setup_krr_params()
                             outfile_path = inst.get('krr', 'outfile')
@@ -270,6 +270,7 @@ def soap_workflow(params):
                             with open(outfile_path, 'w') as f:
                                 step_4 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
                                 out_4, err_4 = step_4.communicate()
+                            '''
 
 
 if __name__ == '__main__':
