@@ -35,7 +35,10 @@ class SetUpParams():
                                       ['kit','--kit'],
                                       ['alchemy_rules','--alchemy_rules'],
                                       ['kernel','--kernel'],
-                                      ['nonorm','--nonorm'],
+                                      ['peratom', '--peratom'],
+                                      ['unsoap', '--unsoap']
+                                      ['normalize_global', '--normalize_global'],
+                                      ['onpy', '--onpy'],
                                       ['permanenteps','--permanenteps'],
                                       ['distance','--distance'],
                                       ['np','--np'],
@@ -50,7 +53,6 @@ class SetUpParams():
                                       ['livek','--livek'],
                                       ['lowmem','--lowmem'],
                                       ['restart','--restart'],
-                                      ['sek', '-sek']
                                      ]
 
         for option, option_string in glosim_soap_options:
@@ -127,7 +129,7 @@ class SetUpParams():
     def add_to_param_list(self, inst, sname, option, option_string):
         if 'kernel' in option and 'krr' in sname:
             value = self.get_kernel_fname(sname)
-            if sname == 'krr':
+            if sname == 'krr' or sname == 'krr_test':
                 return [option_string, value]
             return [value]
             
@@ -168,7 +170,7 @@ def modify_soap_hyperparam_list(param_list, params_to_get, params_set):
         ['time', 'python', '/home/trose/epfl/epfl/glosim/glosim.py', 
          'train.xyz', '--periodic', '-n', '[5, 8]', '-l', '[1]',
          '-c', '[1]', '-g', '[0.7, 1.1]', '--kernel', 'average',
-         '--nonorm', '--np', '1']
+         '--unsoap', '--np', '1']
     params_to_get: list
         The hyperparams: ['n','l','c','g']
     params_set: iterable
