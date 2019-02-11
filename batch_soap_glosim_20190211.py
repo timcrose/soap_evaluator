@@ -16,7 +16,6 @@ class SetUpParams():
         self.soap_param_list += [inst.get(sname, 'glosim_path')]
 
         glosim_soap_options = [['filename', ''],
-                                      ['periodic', '--periodic'],
                                       ['separate_species', '--separate_species'],
                                       ['exclude','--exclude'],
                                       ['nocenter','--nocenter'],
