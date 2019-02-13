@@ -83,15 +83,28 @@ def get_ref_and_pred_energies_from_test_results(test_results_fname):
     try:
         line = lines[0].split()
     except:
+        print('test_results_fname', test_results_fname, 'couldnt split first line')
         return None, None
     ref_energies = None
     pred_energies = None
+    j = 0
+    while line[0] != '0' and j < len(lines):
+        if '#' in line[0]:
+            j += 1
+            line = lines[j].split()
+        else:
+            print('non-comment or result line in test_results_fname', test_results_fname, 'something is probably wrong.')
+            return None, None
+    if j == len(lines):
+        print('EOF reached, something is probably wrong')
+        return None, None
     i = 0
     while line[0] == str(i):
         ref_energies = add_element_to_array(ref_energies, [[i, float(line[1])]])
         pred_energies = add_element_to_array(pred_energies, [[i, float(line[2])]])
         i += 1
-        line = lines[i].split()
+        j += 1
+        line = lines[j].split()
     return ref_energies, pred_energies
 
 def get_napc_from_xyz(path):

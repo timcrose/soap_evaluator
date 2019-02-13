@@ -175,7 +175,7 @@ def create_new_test(inst, owd):
     '''
     sname = 'cross_val'
 
-    dataset_fname = inst.get(sname, 'all_xyz_structs_fname')
+    dataset_fname = inst.get(sname, 'test_structs_fname')
 
     dataset = read_dataset(dataset_fname)
 
