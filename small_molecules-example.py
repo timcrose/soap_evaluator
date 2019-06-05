@@ -6,7 +6,7 @@
 
 import numpy as np
 import sys, os  
-sys.path.append('/home/trose/glosim2/glosim2_test')
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
 sys.path.append(os.environ['soap_dir'])
 import instruct
 

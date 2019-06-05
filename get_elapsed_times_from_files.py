@@ -1,6 +1,6 @@
 import os, datetime, time, glob, sys
 import instruct
-sys.path.append('/home/trose/python_utils')
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
 import file_utils2 as file_utils
 
 def get_num_structs_in_trainxyz_file(path, napc):

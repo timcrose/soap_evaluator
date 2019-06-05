@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/home/trose/python_utils')
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
 import file_utils
 
 def main():

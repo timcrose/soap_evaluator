@@ -1,0 +1,94 @@
+First of all, download the QUIP git repo
+
+$ git clone --recursive https://github.com/libAtoms/QUIP.git
+
+Enter it
+$ cd QUIP
+
+To compile with intel and openmp support, replace Makefile.linux_x86_64_ifort_icc_openmp with the following
+# H0 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+# H0 X
+# H0 X   libAtoms+QUIP: atomistic simulation library
+# H0 X
+# H0 X   Portions of this code were written by
+# H0 X     Albert Bartok-Partay, Silvia Cereda, Gabor Csanyi, James Kermode,
+# H0 X     Ivan Solt, Wojciech Szlachta, Csilla Varnai, Steven Winfield.
+# H0 X
+# H0 X   Copyright 2006-2010.
+# H0 X
+# H0 X   These portions of the source code are released under the GNU General
+# H0 X   Public License, version 2, http://www.gnu.org/copyleft/gpl.html
+# H0 X
+# H0 X   If you would like to license the source code under different terms,
+# H0 X   please contact Gabor Csanyi, gabor@csanyi.net
+# H0 X
+# H0 X   Portions of this code were written by Noam Bernstein as part of
+# H0 X   his employment for the U.S. Government, and are not subject
+# H0 X   to copyright in the USA.
+# H0 X
+# H0 X
+# H0 X   When using this software, please cite the following reference:
+# H0 X
+# H0 X   http://www.libatoms.org
+# H0 X
+# H0 X  Additional contributions by
+# H0 X    Alessio Comisso, Chiara Gattinoni, and Gianpietro Moras
+# H0 X
+# H0 XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+# declarations
+
+include arch/Makefile.linux_x86_64_ifort_icc
+
+DEFINES += -D_OPENMP
+F95FLAGS += -qopenmp -fPIC
+F77FLAGS += -qopenmp -fPIC
+CFLAGS += -qopenmp -fPIC
+CPLUSPLUSFLAGS += -qopenmp -fPIC
+LINKOPTS += -qopenmp
+
+QUIPPY_FCOMPILER = intelem
+QUIPPY_DEFINES = -DGETARG_F2003
+QUIPPY_F90FLAGS = -fpp -free
+QUIPPY_F77FLAGS = -fpp -fixed
+QUIPPY_CPP = ifort -EP
+
+Essentially, we needed to replace the openmp flag with -qopenmp
+
+$ cp ~/Makefile.linux_x86_64_ifort_icc_openmp ~/QUIP/arch
+
+Now let QUIP know you want intel and openmp
+
+$ export QUIP_ARCH=linux_x86_64_ifort_icc_openmp
+
+Make sure the intel environment is active
+
+$ module swap openmpi impi/2018_Update_3
+$ module swap gnu intel/18.0.3.222
+
+If you haven't already activated an intelpython2 virtual env and installed ase, do that now.
+
+$ conda create -n idp intelpython2_core python=2
+$ conda activate idp
+$ pip install ase
+
+Run the Makeile configuration command and put -L/opt/ohpc/pub/intel/intel18/compilers_and_libraries_2018.3.222/linux/mkl/lib/intel64 -lmkl_intel_lp64 -lmkl_sequential -lmkl_core for MATH_LINKOPTS
+Answer n to everything except makedeps
+
+$ make config
+
+Compile QUIP
+
+$ make
+
+Only compile quippy for the user
+
+$ export QUIPPY_INSTALL_OPTS=--user
+
+Compile quippy
+
+$ make install-quippy
+
+Reference (include in PYTHONPATH) the quippy directory that contains _quippy.so
+
+$ export PYTHONPATH=${HOME}/QUIP/quippy/build/linux_x86_64_ifort_icc_openmp/lib.linux-x86_64-2.7/quippy:$PYTHONPATH
