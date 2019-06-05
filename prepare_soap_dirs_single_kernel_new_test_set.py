@@ -1,6 +1,6 @@
 import instruct, os, shutil, sys, random, copy, itertools
 import numpy as np
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
 import file_utils, str_utils
 
 

@@ -62,7 +62,7 @@ class FileLock(object):
         start_time = time.time()
         while True:
             try:
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
                 self.fd = os.open(self.lockfile, os.O_CREAT|os.O_EXCL|os.O_RDWR)
                 break;
             except OSError as e:

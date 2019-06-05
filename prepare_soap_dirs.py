@@ -1,5 +1,5 @@
 import instruct, os, shutil, sys, random, copy, itertools
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
 import file_utils
 
 def create_new_working_dirs(inst):

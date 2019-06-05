@@ -1,5 +1,5 @@
 import instruct, itertools, os, sys
-sys.path.append(os.path.join(os.environ['HOME'], 'python_utils'))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
 import file_utils, math_utils
 
 

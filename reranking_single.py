@@ -2,7 +2,7 @@ import sys, glob, os
 import numpy as np
 from scipy import stats
 import instruct
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
 import file_utils2 as file_utils
 
 def sort_by_col(data, col):

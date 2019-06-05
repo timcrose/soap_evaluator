@@ -164,7 +164,7 @@ def modify_soap_hyperparam_list(param_list, params_to_get, params_set):
     param_list: str
         List of params to pass to glosim to compute kernel.
         Ex:
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
          'train.xyz', '--periodic', '-n', '[5, 8]', '-l', '[1]',
          '-c', '[1]', '-g', '[0.7, 1.1]', '--kernel', 'average',
          '--nonorm', '--np', '1']

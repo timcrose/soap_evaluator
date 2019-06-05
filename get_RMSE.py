@@ -2,7 +2,7 @@ from sklearn.metrics import mean_squared_error
 from math import sqrt
 import numpy as np
 import instruct, sys, os
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils")))
+sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
 import file_utils2 as file_utils
 
 def get_ref_and_pred_energies_from_test_results(test_results_fname):
