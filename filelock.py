@@ -62,7 +62,7 @@ class FileLock(object):
         start_time = time.time()
         while True:
             try:
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
+                #print('locks', glob.glob(os.path.join(os.environ['HOME'], 'genarris20_mpi4py/genarris_mpi4py/run_calcs', '*lock*')))
                 self.fd = os.open(self.lockfile, os.O_CREAT|os.O_EXCL|os.O_RDWR)
                 break;
             except OSError as e:
