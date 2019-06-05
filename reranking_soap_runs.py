@@ -85,7 +85,7 @@ def create_new_working_dirs(inst):
 
                     saved_results_fname = os.path.basename(inst.get(sname, 'outfile'))
                     saved_results_fpath = os.path.join(ntrain_path, saved_results_fname)
-                    test_results = file_utils.grep('# Test points  MAE', saved_results_fpath, search_from_top_to_bottom=False)
+                    test_results = file_utils.grep('# Test points  MAE', saved_results_fpath)
                     test_results = test_results[0].split()
                     
                     MAE = get_result('MAE', test_results)

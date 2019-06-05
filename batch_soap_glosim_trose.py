@@ -126,11 +126,15 @@ class SetUpParams():
         if sname == 'krr':
             search_str = '.k'
             search_str_avoid = 'rect'
+            start_path = self.kernel_calculation_path
+            test_str = ''
         elif sname == 'krr_test':
             search_str = 'rect'
             search_str_avoid = 'no_strs_to_avoid'
+            start_path = '.'
+            test_str = 'itest' + str(self.itest) + '*'
 
-        file_list = glob.glob(os.path.join(self.kernel_calculation_path, '*'))
+        file_list = glob.glob(os.path.join(start_path, '*' + test_str))
         for fname in file_list:
             if search_str in fname and search_str_avoid not in fname:
                 return fname
@@ -143,6 +147,13 @@ class SetUpParams():
             if sname == 'krr' or sname == 'krr_test':
                 return [option_string, value]
             return [value]
+        if sname == 'krr_test':
+            if 'weights' == option: 
+                value = 'weights_itest' + str(self.itest) + '.dat'
+                return [option_string, value]
+            if 'props' == option:
+                value = 'en_new_test_itest' + str(self.itest) + '.dat'
+                return [option_string, value]
             
         try:
             value = inst.get(sname, option)
@@ -169,7 +180,7 @@ def kernel_done_calculating(kernel_outfile_fpath):
     Purpose: processes that are not part of the kernel generation process are waiting for the kernel generation to be
         finished. It will output "Success" in that file when complete.
     '''
-    return file_utils.grep('uccess', kernel_outfile_fpath, read_mode='r', return_list=False, search_from_top_to_bottom=False)
+    return file_utils.grep('uccess', kernel_outfile_fpath, read_mode='r')
 
 
 def progress_being_made(kernel_outfile_fpath):
@@ -310,7 +321,7 @@ def soap_workflow(params):
                         continue
                     os.chdir(ntrain_path)
                 
-                    if sname in params.process_list:
+                    if 'krr' in params.process_list:
                         #krr
                         params.setup_krr_params()
                         outfile_path = inst.get(sname, 'outfile')
@@ -325,6 +336,16 @@ def soap_workflow(params):
                         with open(outfile_path, 'w') as f:
                             step_2 = subprocess.Popen(params.krr_param_list, stdout=f, stderr=f)
                             out_2, err_2 = step_2.communicate()
+                    elif 'krr_test' in params.process_list:
+                        # currently, preparation of the krr_test dirs has to be done separately after krr is done
+                        for itest in range(inst.get_eval('krr', 'ntests')):
+                            params.itest = itest
+                            params.setup_krr_test_params()
+                            outfile_path = inst.get('krr_test', 'outfile') + '_itest' + str(itest)
+
+                            with open(outfile_path, 'w') as f:
+                                step_3 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
+                                out_3, err_3 = step_3.communicate()
                         
 
 

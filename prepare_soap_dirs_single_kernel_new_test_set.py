@@ -1,9 +1,10 @@
 import instruct, os, shutil, sys, random, copy, itertools
+import numpy as np
 sys.path.append('/home/trose/python_utils')
-import file_utils
+import file_utils, str_utils
 
 
-def write_en_dat(wdir_path, xyz_fpath, out_fname):
+def write_en_dat(wdir_path, xyz_fpath, out_fname, idx=None):
     '''
     wdir_path: str
         Directory to write the energy dat file to.
@@ -14,27 +15,115 @@ def write_en_dat(wdir_path, xyz_fpath, out_fname):
     out_fname: str
         File name of the desired outputted dat file. (Must end with .dat)
 
+    idx: iterable or None:
+        Defines the indices of structures in the xyz file to create the
+        energy dat for. If None, use the whole xyz file.
+
     Purpose: write an energy dat file which is a single column
         listing the energy of each structure.
     '''
     out_fpath = os.path.join(wdir_path, out_fname)
     os.system("grep energy " + xyz_fpath + " | awk '{print $10}' | sed s/energy=//g > " + out_fpath)
+    if idx is not None:
+        lines = file_utils.get_lines_of_file(out_fpath, mode='r')
+        requested_lines = np.array(lines)[idx]
+        file_utils.write_lines_to_file(out_fpath, requested_lines, mode='w')
 
+
+def get_num_structs_in_xyz(xyz_fpath):
+    '''
+    xyz_fpath: str
+        path to .xyz file
+
+    return: int
+        number of structures in an xyz file
+
+    Notes: only works for periodic structures with Lattice in comment line
+    '''
+    return len(file_utils.grep('Lattice', xyz_fpath))
+    
+
+def get_num_structs_in_rect(rect_fpath):
+    '''
+    rect_fpath: str
+        path to *rect.k file which is the rectangular matrix: similarity of 
+        new structures (rows) to old structures (columns)
+
+    return: int
+        number of rows of the rect file
+    '''
+    # - 1 because there is a header line
+    return len(file_utils.get_lines_of_file(rect_fpath)) - 1
+
+
+def get_train_idx(wdir_path, itest, ntrain):
+    '''
+    wdir_path: str
+        path to working directory
+
+    itest: int
+        index of the test
+
+    ntrain: int
+        number of training structs that were used
+
+    return: np.array shape (ntrain,)
+        indices of train structures in the overall xyz file in which training
+        and validation structures can be found.
+    '''
+    saved_fpath = os.path.join(wdir_path, 'saved')
+    train_lines = file_utils.grep('TRAIN', saved_fpath)
+    train_lines_in_this_itest = train_lines[itest * ntrain : (itest + 1) * ntrain]
+    train_idx = np.array([eval(line.rstrip())[0] for line in train_lines_in_this_itest])
+    return train_idx
+
+
+def write_rect_file(total_rect_fpath, out_dir, train_idx, new_test_idx, itest):
+    '''
+    total_rect_fpath: str
+        path to *rect.k file which is the rectangular matrix: similarity of 
+        new structures (rows) to old structures (columns)
+    out_dir: str
+        Directory to write the rect file to.
+    train_idx: np.array shape (ntrain,)
+        indices of train structures in the overall xyz file in which training
+        and validation structures can be found.
+    new_test_idx: np.array shape (ntest,)
+        indices of test structures in the overall xyz file in which the 
+        universe of new test structures can be found (and are the rows of the
+        rect file)
+    itest: int
+        index of the test
+
+    return: None
+
+    Purpose: Write a rect file that can be used for krr_test
+    '''
+    total_rect = np.loadtxt(total_rect_fpath)
+    itest_rect = total_rect[new_test_idx][:, train_idx]
+    #Currently, krr-test.py only takes in a .dat file
+    itest_rect = [list(row) for row in itest_rect]
+    fpath = os.path.join(out_dir, 
+                file_utils.fname_from_fpath(total_rect_fpath) +
+                '_itest' + str(itest) + '.k')
+    file_utils.write_rows_to_csv(fpath, itest_rect, mode='wb', delimiter=' ')
 
 def create_new_working_dirs(inst):
     '''
     inst: contains conf file params
 
     Purpose: Delete any current folders under each dir with old runs
-        of the same parameter sets and create new ones. The structure
-        of the folders are designed for k-fold cross-validation:
-        Root: selection_method, depth=1: param_path, depth=2:
-        test_num_structs, depth=3: train_num_structs, depth=4: test_num, depth=5:
-        train_num. (where num indicates the replica where a different
-        test/train set was selected but with the same num_structs's.
+        of the same parameter sets and create new ones.
     '''
     owd = os.getcwd()
     soap_runs_dir = os.path.join(owd, 'soap_runs')
+    sname = 'krr_test'
+    total_rect_fpath = inst.get(sname, 'total_rect_fpath')
+    num_structs_in_total_rect = get_num_structs_in_rect(total_rect_fpath)
+    new_test_xyz_fpath = inst.get(sname, 'new_test_xyz_fpath')
+    num_structs_in_new_test = get_num_structs_in_xyz(new_test_xyz_fpath)
+    if num_structs_in_new_test != num_structs_in_total_rect:
+        raise Exception('num_structs_in_new_test != num_structs_in_total_rect but it should.')
     sname = 'krr'
 
     params_to_get = ['n','l','c','g']
@@ -55,31 +144,29 @@ def create_new_working_dirs(inst):
                 param_string += '-'
 
         param_path = os.path.join(soap_runs_dir, param_string)
-        if os.path.isdir(param_path):
-            answer = raw_input('Really delete all contents of ' + param_path 
-                            + '? (y/n)')
-
-            if answer == 'y':
-                file_utils.rm(param_path)
-        file_utils.mkdir_if_DNE(param_path)
 
         calculate_kernel_path = os.path.join(param_path, 'calculate_kernel')
-        file_utils.mkdir_if_DNE(calculate_kernel_path)
 
         all_xyz_structs_fpath = inst.get('calculate_kernel', 'filename')
-        props_fname = inst.get('krr', 'props')
-        write_en_dat(calculate_kernel_path, all_xyz_structs_fpath, props_fname)
 
         for selection_method in inst.get_list(sname, 'mode'):
             selection_method_path = os.path.join(param_path, selection_method)
-            file_utils.mkdir_if_DNE(selection_method_path)
 
             for ntest in inst.get_list(sname, 'ntest'):
                 ntest_path = os.path.join(selection_method_path, 'ntest_' + str(ntest))
-                file_utils.mkdir_if_DNE(ntest_path)
                 for ntrain in inst.get_list(sname, 'ntrain'):
                     ntrain_path = os.path.join(ntest_path, 'ntrain_' + str(ntrain))
-                    file_utils.mkdir_if_DNE(ntrain_path)
+
+                    file_utils.rm(os.path.join(ntrain_path, 'lockfile'))
+                    ntests = inst.get_eval(sname, 'ntests')
+                    for itest in range(ntests):
+                        train_idx = get_train_idx(ntrain_path, itest, ntrain)
+
+                        weights_dat = 'weights_itest' + str(itest) + '.dat'
+                        new_test_idx = np.random.choice(num_structs_in_total_rect, ntest, replace=False)
+                        
+                        write_en_dat(ntrain_path, new_test_xyz_fpath, 'en_new_test_itest' + str(itest) + '.dat', idx=new_test_idx)
+                        write_rect_file(total_rect_fpath, ntrain_path, train_idx, new_test_idx, itest)
     
 def read_dataset(dataset_fname):
     '''

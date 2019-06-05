@@ -107,25 +107,8 @@ def get_ref_and_pred_energies_from_test_results(test_results_fname):
         line = lines[j].split()
     return ref_energies, pred_energies
 
-def get_napc_from_xyz(path):
-    with open(path) as f:
-        lines = f.readlines()
-    return int(lines[0])
-
 def get_num_structs_in_xyz_file(path):
-    '''
-    napc: int
-        number of atoms per unit cell. Currently the program only
-        supports training sets with the same napc for each
-        structure.
-    '''
-    napc = get_napc_from_xyz(path)
-    with open(path) as f:
-        lines = f.readlines()
-    num_structs = float(len(lines)) / float(napc + 2)
-    if int(num_structs) != num_structs:
-        raise IOError('check napc, each struct must have the same napc. napc = ' + str(napc))
-    return int(num_structs)
+    return len(file_utils.grep('Lattice', path))
 
 def main():
     inst_path = sys.argv[-1]
