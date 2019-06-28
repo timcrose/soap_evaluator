@@ -72,7 +72,8 @@ $ conda create -n idp intelpython2_core python=2
 $ conda activate idp
 $ pip install ase
 
-Run the Makeile configuration command and put -L/opt/ohpc/pub/intel/intel18/compilers_and_libraries_2018.3.222/linux/mkl/lib/intel64 -lmkl_intel_lp64 -lmkl_sequential -lmkl_core for MATH_LINKOPTS
+Run the Makefile configuration command and put -L/opt/ohpc/pub/intel/intel18/compilers_and_libraries_2018.3.222/linux/mkl/lib/intel64_lin -lmkl_blas95_ilp64 -lmkl_lapack95_ilp64 for blas and lapack options and -L/opt/ohpc/pub/intel/intel18/compilers_and_libraries_2018.3.222/linux/mkl/lib/intel64_lin -lmkl_intel_ilp64 -lmkl_sequential -lmkl_core for other linking options
+
 Answer n to everything except makedeps
 
 $ make config
@@ -89,6 +90,6 @@ Compile quippy
 
 $ make install-quippy
 
-Reference (include in PYTHONPATH) the quippy directory that contains _quippy.so
+Reference (include in PYTHONPATH) the quippy directory that contains _quippy.so, however, make sure it is after your python lib because quippy contains io.py which clashes with your python lib.
 
-$ export PYTHONPATH=${HOME}/QUIP/quippy/build/linux_x86_64_ifort_icc_openmp/lib.linux-x86_64-2.7/quippy:$PYTHONPATH
+$ export PYTHONPATH=${HOME}/anaconda/anaconda2/envs/intelpython2_core/lib/python2.7:$PYTHONPATH:${HOME}/QUIP/quippy/build/linux_x86_64_ifort_icc_openmp/lib.linux-x86_64-2.7/quippy
