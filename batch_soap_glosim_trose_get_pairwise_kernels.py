@@ -1,7 +1,6 @@
 import os, sys, random, time, subprocess, glob, itertools
 import instruct
 from filelock import FileLock
-sys.path.append(os.environ["HOME"])
 from python_utils import file_utils
 
 class SetUpParams():
@@ -260,7 +259,7 @@ def soap_workflow(params):
     sname = 'krr'
     #original working dir
     owd = os.getcwd()
-    soap_runs_dir = os.path.join(owd, 'soap_runs')
+    soap_runs_dir = os.path.join(owd, 'pairwise_kernels')
 
     params_to_get = ['n','l','c','g']
     params_list = [inst.get_list('calculate_kernel', p) for p in params_to_get]
@@ -281,26 +280,30 @@ def soap_workflow(params):
 
         param_path = os.path.join(soap_runs_dir, param_string)
 
-        kernel_calculation_path = os.path.abspath(os.path.join(param_path, 'calculate_kernel'))
+        species = inst.get('calculate_kernel', 'species')
+        kernel_calculation_path = os.path.abspath(os.path.join(param_path, species))
 
         params.kernel_calculation_path = kernel_calculation_path
         outfile_fname = inst.get('calculate_kernel', 'outfile')
         outfile_fpath = os.path.join(kernel_calculation_path, outfile_fname)
+        '''
         while not kernel_done_calculating(outfile_fpath):
             # Attempt to acquire lockfile.
             time.sleep(random.random())
             with FileLock(params.kernel_lockfile, dir_name=kernel_calculation_path,timeout=10, delay=1, exit_gracefully=True) as fl:
                 if not fl.timed_out and not kernel_done_calculating(outfile_fpath):
-                    #Create kernel
-                    params.soap_param_list = modify_soap_hyperparam_list(params.soap_param_list,
-                                params_to_get, params_set)
-                    
-                    os.chdir(kernel_calculation_path)
-                    
-                    with open(outfile_fpath, 'w') as f:
-                        step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
-                        out_1, err_1 = step_1.communicate()
+        '''
+        #Create kernel
+        params.soap_param_list = modify_soap_hyperparam_list(params.soap_param_list,
+                    params_to_get, params_set)
+        
+        os.chdir(kernel_calculation_path)
+        
+        with open(outfile_fpath, 'a') as f:
+            step_1 = subprocess.Popen(params.soap_param_list, stdout=f, stderr=f)
+            out_1, err_1 = step_1.communicate()
 
+        '''
             if kernel_done_calculating(outfile_fpath):
                 break
             elif not progress_being_made(kernel_calculation_path):
@@ -346,6 +349,7 @@ def soap_workflow(params):
                             with open(outfile_path, 'w') as f:
                                 step_3 = subprocess.Popen(params.krr_test_param_list, stdout=f, stderr=f)
                                 out_3, err_3 = step_3.communicate()
+        ''' 
                         
 
 

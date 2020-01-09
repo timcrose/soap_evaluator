@@ -56,10 +56,10 @@ class Instruct(SafeConfigParser):
 		return False
 
 	def get_eval(self,section,option):
-                try:
-        		return ast.literal_eval(self.get(section,option))
-                except:
-                        return eval(self.get(section,option))
+		try:
+			return ast.literal_eval(self.get(section,option))
+		except:
+			return eval(self.get(section,option))
 
 	def get_with_default(self,section,option,default,eval=False):
 		self.set_default(section,option,str(default))

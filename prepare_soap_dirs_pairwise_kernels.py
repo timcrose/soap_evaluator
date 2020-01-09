@@ -1,5 +1,4 @@
 import instruct, os, shutil, sys, random, copy, itertools
-sys.path.append(os.environ["HOME"])
 from python_utils import file_utils
 
 
@@ -26,15 +25,13 @@ def create_new_working_dirs(inst):
     inst: contains conf file params
 
     Purpose: Delete any current folders under each dir with old runs
-        of the same parameter sets and create new ones. The structure
-        of the folders are designed for k-fold cross-validation:
-        Root: selection_method, depth=1: param_path, depth=2:
-        test_num_structs, depth=3: train_num_structs, depth=4: test_num, depth=5:
-        train_num. (where num indicates the replica where a different
-        test/train set was selected but with the same num_structs's.
+        of the same parameter sets and create new ones (if desired). The structure
+        of the folders are designed for calculating pairwise kernels:
+        Root: pairwise_kernels, depth=1: param_path, depth=2:
+        species (e.g. target1).
     '''
     owd = os.getcwd()
-    soap_runs_dir = os.path.join(owd, 'soap_runs')
+    soap_runs_dir = os.path.join(owd, 'pairwise_kernels')
     sname = 'krr'
 
     params_to_get = ['n','l','c','g']
@@ -63,23 +60,10 @@ def create_new_working_dirs(inst):
                 file_utils.rm(param_path)
         file_utils.mkdir_if_DNE(param_path)
 
-        calculate_kernel_path = os.path.join(param_path, 'calculate_kernel')
+        species = inst.get('calculate_kernel', 'species')
+        calculate_kernel_path = os.path.join(param_path, species)
         file_utils.mkdir_if_DNE(calculate_kernel_path)
 
-        all_xyz_structs_fpath = inst.get('calculate_kernel', 'filename')
-        props_fname = inst.get('krr', 'props')
-        write_en_dat(calculate_kernel_path, all_xyz_structs_fpath, props_fname)
-
-        for selection_method in inst.get_list(sname, 'mode'):
-            selection_method_path = os.path.join(param_path, selection_method)
-            file_utils.mkdir_if_DNE(selection_method_path)
-
-            for ntest in inst.get_list(sname, 'ntest'):
-                ntest_path = os.path.join(selection_method_path, 'ntest_' + str(ntest))
-                file_utils.mkdir_if_DNE(ntest_path)
-                for ntrain in inst.get_list(sname, 'ntrain'):
-                    ntrain_path = os.path.join(ntest_path, 'ntrain_' + str(ntrain))
-                    file_utils.mkdir_if_DNE(ntrain_path)
     
 def read_dataset(dataset_fname):
     '''

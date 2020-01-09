@@ -1,24 +1,56 @@
 import instruct, os, shutil, sys, random, copy, itertools
+import numpy as np
 sys.path.append(os.environ["HOME"])
 from python_utils import file_utils
 
+def binding_energy(nmpc, total_energy, single_molecule_energy):
+    return total_energy - (nmpc * single_molecule_energy)
 
-def write_en_dat(wdir_path, xyz_fpath, out_fname):
+def normalized_BE_by_napc(napc, nmpc, total_energy, single_molecule_energy, BE=None):
+    if BE is None:
+        BE = binding_energy(nmpc, total_energy, single_molecule_energy)
+    return BE / float(napc)
+
+
+def write_en_dat(wdir_path, structure_dir, out_fname, single_molecule_energy, num_structures_to_use, energy_name='energy'):
     '''
     wdir_path: str
         Directory to write the energy dat file to.
-
-    xyz_fpath: str
-        Full file path to the source .xyz file.
-
+    structure_dir: str
+        path to directory containing jsons with structures
     out_fname: str
         File name of the desired outputted dat file. (Must end with .dat)
+    single_molecule_energy: float
+        total energy of the single molecule used to create the structures in structure_dir (eV)
+    num_structures_to_use: int or str
+        number of structures to use out of all structures in structure_dir (gets the first num_structures_to_use). If
+        'all', then use all structures in structure_dir
+    energy_name: str
+        name of the key in the structures' property dictionary containing the total energy (eV)
 
     Purpose: write an energy dat file which is a single column
         listing the energy of each structure.
     '''
     out_fpath = os.path.join(wdir_path, out_fname)
-    os.system("grep energy " + xyz_fpath + " | awk '{print $10}' | sed s/energy=//g > " + out_fpath)
+    num_atoms_arr_outfpath = os.path.join(wdir_path, 'num_atoms_arr.npy')
+    json_files = file_utils.glob(os.path.join(structure_dir, '*.json'))
+    if num_structures_to_use != 'all':
+        json_files = json_files[: int(num_structures_to_use)]
+    num_atoms_lst = []
+    with open(out_fpath, mode='w') as f:
+        for json_file in json_files:
+            struct = file_utils.get_dct_from_json(json_file, load_type='load')
+            if 'properties' in struct and energy_name in struct['properties']:
+                en=float(struct['properties'][energy_name])
+                geometry = np.array([struct['geometry'][i][:3] for i in range(len(struct['geometry']))])
+                napc = len(geometry)
+                num_atoms_lst.append(napc)
+                nmpc = int(struct['properties']['nmpc'])
+                energy = normalized_BE_by_napc(napc, nmpc, en, single_molecule_energy)
+            else:
+                energy = 'none'
+            f.write(str(energy) + '\n')
+    np.save(num_atoms_arr_outfpath, np.array(num_atoms_lst, dtype='float32'))
 
 
 def create_new_working_dirs(inst):
@@ -33,6 +65,7 @@ def create_new_working_dirs(inst):
         train_num. (where num indicates the replica where a different
         test/train set was selected but with the same num_structs's.
     '''
+    single_molecule_energy = eval(inst.get('master', 'single_molecule_energy'))
     owd = os.getcwd()
     soap_runs_dir = os.path.join(owd, 'soap_runs')
     sname = 'krr'
@@ -56,7 +89,7 @@ def create_new_working_dirs(inst):
 
         param_path = os.path.join(soap_runs_dir, param_string)
         if os.path.isdir(param_path):
-            answer = raw_input('Really delete all contents of ' + param_path 
+            answer = input('Really delete all contents of ' + param_path 
                             + '? (y/n)')
 
             if answer == 'y':
@@ -66,9 +99,10 @@ def create_new_working_dirs(inst):
         calculate_kernel_path = os.path.join(param_path, 'calculate_kernel')
         file_utils.mkdir_if_DNE(calculate_kernel_path)
 
-        all_xyz_structs_fpath = inst.get('calculate_kernel', 'filename')
+        structure_dir = inst.get('master', 'structure_dir')
+        num_structures_to_use = inst.get_with_default('master', 'num_structures_to_use', 'all')
         props_fname = inst.get('krr', 'props')
-        write_en_dat(calculate_kernel_path, all_xyz_structs_fpath, props_fname)
+        write_en_dat(calculate_kernel_path, structure_dir, props_fname, single_molecule_energy, num_structures_to_use)
 
         for selection_method in inst.get_list(sname, 'mode'):
             selection_method_path = os.path.join(param_path, selection_method)
@@ -209,7 +243,7 @@ def create_train_test_splits(inst, owd):
                         test_num_path = os.path.join(train_num_structs_path, 'test_num_' + str(test_num))
 
                         if selection_method == 'random':
-                            test_idx_list = random.sample(range(total_dataset_size), test_size)
+                            test_idx_list = random.sample(list(range(total_dataset_size)), test_size)
                         test_idx_lines = []
                         for test_idx in test_idx_list:
                             test_idx_lines += dataset[test_idx * lines_per_struct : (test_idx + 1) * lines_per_struct]
