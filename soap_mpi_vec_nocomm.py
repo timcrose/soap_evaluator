@@ -12,9 +12,11 @@ from libmatch.structures import structure, structurelist
 from tools import krr
 import psutil
 from mpi4py import MPI
+
+print('imported everything', flush=True)
 comm = MPI.COMM_WORLD
 MPI_ANY_SOURCE = MPI.ANY_SOURCE
-print('imported everything', flush=True)
+
 
 def get_atoms_list(data_files):
     '''
@@ -328,12 +330,12 @@ def get_specific_krr_params(ntrain_path):
     return ntrain, ntest, selection_method
 
 
-def root_print(comm, *print_message):
-    if comm.rank == 0:
-        print(print_message, flush=True)
+def root_print(rank, *print_message):
+    if rank == 0:
+        print(print_message,flush=True)
 
 def rank_print(rank, *print_message):
-    with open('output_' + str(rank) + '.out', mode='a') as f:
+    with open('output_from_rank_' + str(rank) + '.out', mode='a') as f:
         print(print_message, file=f, flush=True)
 
 def task_complete(i, j, num_structures, kernel_memmap_path):
@@ -584,7 +586,7 @@ def soap_workflow(params):
     params_list = [inst.get_list('calculate_kernel', p) for p in params_to_get]
     params_combined_iterable = itertools.product(*params_list)
 
-    root_print(comm, 'using ' + str(comm.size) + ' MPI ranks on ' + str(params.num_structures_to_use) + ' structures.')
+    root_print(comm.rank, 'using ' + str(comm.size) + ' MPI ranks on ' + str(params.num_structures_to_use) + ' structures.')
     start_time = time.time()
 
     for params_set in params_combined_iterable:
@@ -603,7 +605,7 @@ def soap_workflow(params):
         n, l, c, g = params_set
         
         param_path = os.path.join(soap_runs_dir, param_string)
-        root_print(comm, 'param_path', param_path)
+        root_print(comm.rank, 'param_path', param_path)
         kernel_calculation_path = os.path.abspath(os.path.join(param_path, 'calculate_kernel'))
         params.kernel_calculation_path = kernel_calculation_path
         en_all_dat_fname = inst.get('krr', 'props')
@@ -616,81 +618,52 @@ def soap_workflow(params):
         #                             load balancing but there's more communication.
         start_time_envs = time.time()
         xyz_fpath = os.path.join(kernel_calculation_path, params.xyz_file_basename + '.xyz')
-        if comm.rank == 0:
-            num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
-        else:
-            num_structures = None
-        print('about to bcast num_structures', flush=True)
-        num_structures = comm.bcast(num_structures, root=0)
-        root_print(comm, str(num_structures) + ' structures are in the pool.')
+        num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
+        
+        root_print(comm.rank, str(num_structures) + ' structures are in the pool.')
         # make an array that will store the number of atoms in every structure.
         # Must have at least 2 ranks so that 1 can be the master rank
         ##print('load_balancing_factor', load_balancing_factor, flush=True)
         ##print('num_structures', num_structures, flush=True)
         ##print('comm.size', comm.size, flush=True)
-        ##print('np.ceil((load_balancing_factor * num_structures) / (comm.size - 1))', np.ceil((load_balancing_factor * num_structures) / (comm.size - 1)), flush=True)
-        num_tasks_per_rank = int(np.ceil((load_balancing_factor * num_structures) / (comm.size - 1)))
+        num_tasks_per_rank = int(np.ceil(float(num_structures) / float(comm.size)))
         if comm.rank == 0:
             file_utils.mkdir_if_DNE(global_envs_dir)
-            if os.path.exists(global_envs_dir):
-                global_envs_incomplete_tasks = np.array(list(set(np.arange(num_structures)) - set([int(file_utils.fname_from_fpath(fpath).split('_')[1]) for fpath in file_utils.find(global_envs_dir, '*.dat')])))
-            else:
-                global_envs_incomplete_tasks = np.arange(num_structures)
-            done_ranks = []
-            num_atoms_lst = []
-            while len(done_ranks) != comm.size - 1:
-                # world rank 0 waiting for ready rank
-                ready_rank = comm.recv(source=MPI_ANY_SOURCE, tag=0)
-
-                # a rank is now ready to recieve a message
-                if len(global_envs_incomplete_tasks) != 0:
-                    message = global_envs_incomplete_tasks[:num_tasks_per_rank]
-                    global_envs_incomplete_tasks = np.delete(global_envs_incomplete_tasks, appropriate_np_del_indices(np.arange(num_tasks_per_rank), len(global_envs_incomplete_tasks)))
-                else: #Done!
-                    message = 'done'
-                    done_ranks.append(ready_rank)
-                # world rank 0 sending message to ready_rank
-                if isinstance(message, str) and message == 'done':
-                    print('rank', ready_rank, 'is done calculating environments', flush=True)
-                else:
-                    print('rank', ready_rank, 'is ready to calculate environments for structures indexed by', message, flush=True)
-                comm.send(message, dest=ready_rank, tag=1)
-                # world rank 0 sent message to ready_rank
+        if os.path.exists(global_envs_dir):
+            global_envs_incomplete_tasks = np.array(list(set(np.arange(num_structures)) - set([int(file_utils.fname_from_fpath(fpath).split('_')[1]) for fpath in file_utils.find(global_envs_dir, '*.dat')])))
         else:
-            alchem = alchemy(mu=params.soap_standalone_options['mu'])
-            os.chdir(kernel_calculation_path)
-            data_files = file_utils.glob(os.path.join(params.structure_dir, '*.json'))
-            if params.num_structures_to_use != 'all':
-                data_files = data_files[: int(params.num_structures_to_use)]
-            
-            while True:
-                comm.send(comm.rank, dest=0, tag=0)
-                # ready_rank told comm.rank 0 that it is ready to recieve a message from comm.rank 0
-                message = comm.recv(source=0, tag=1)
-                # ready_rank received message from comm.rank 0
-                if (type(message) is str and message == 'done') or len(message) == 0:
-                    break
-                rank_print(comm.rank, 'message', message)
-                # message is a np.array of tasks where each task is the index in the structure list of a structure that still
-                # needs its global soap descriptor calculated.
-                # Calculate the global soap descriptor for each structure whose index is in message
-                start = message[0]
-                rank_print(comm.rank, 'start', start)
-                if message[-1] == start:
-                    stop = start + 1
-                else:
-                    stop = message[-1] + 1
-                rank_print(comm.rank, 'about to get atoms list')
-                al = get_atoms_list(data_files[start : stop])
-                rank_print(comm.rank, 'got atoms list')
-                sl = structurelist()
-                sl.count = start # Set to the global starting index
-                for at in al:
-                    si = structure(alchem)
-                    si.parse(at, c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], unsoap=params.soap_standalone_options['unsoap'], kit=params.soap_standalone_options['kit'])
-                    sl.append(si.atomic_envs_matrix)
+            global_envs_incomplete_tasks = np.arange(num_structures)
+        if comm.rank < comm.size - 1:
+            global_envs_incomplete_tasks = global_envs_incomplete_tasks[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
+        else:
+            global_envs_incomplete_tasks = global_envs_incomplete_tasks[comm.rank * num_tasks_per_rank :]
+        alchem = alchemy(mu=params.soap_standalone_options['mu'])
+        os.chdir(kernel_calculation_path)
+        data_files = file_utils.glob(os.path.join(params.structure_dir, '*.json'))
+        if params.num_structures_to_use != 'all':
+            data_files = data_files[: int(params.num_structures_to_use)]
+        
+        # global_envs_incomplete_tasks is a np.array of tasks where each task is the index in the structure list of a structure that still
+        # needs its global soap descriptor calculated.
+        # Calculate the global soap descriptor for each structure whose index is in global_envs_incomplete_tasks
+        if len(global_envs_incomplete_tasks) > 0:
+            start = global_envs_incomplete_tasks[0]
+            rank_print(comm.rank, 'start', start)
+            if global_envs_incomplete_tasks[-1] == start:
+                stop = start + 1
+            else:
+                stop = global_envs_incomplete_tasks[-1] + 1
+            rank_print(comm.rank, 'about to get atoms list')
+            al = get_atoms_list(data_files[start : stop])
+            rank_print(comm.rank, 'got atoms list')
+            sl = structurelist()
+            sl.count = start # Set to the global starting index
+            for at in al:
+                si = structure(alchem)
+                si.parse(at, c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], unsoap=params.soap_standalone_options['unsoap'], kit=params.soap_standalone_options['kit'])
+                sl.append(si.atomic_envs_matrix)
         start_time_kernel = time.time()
-        root_print(comm,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
+        root_print(comm.rank,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
         # Calculate kernel if not already calculated
         kernel_memmap_path = os.path.join(kernel_calculation_path, 'kernel.dat')
         if comm.rank == 0:
@@ -709,108 +682,66 @@ def soap_workflow(params):
             print('getting kernel traversal order', flush=True)
             print('b4 incomplete_tasks.shape', incomplete_tasks.shape, flush=True)
             print('b4 incomplete_tasks.size', incomplete_tasks.size, flush=True)
-            incomplete_tasks = get_traversal_order(incomplete_tasks, kernel_calculation_path)
-            num_tasks_per_rank = int(np.ceil((load_balancing_factor * len(incomplete_tasks)) / (comm.size - 1)))
-            done_ranks = []
-            while len(done_ranks) != comm.size - 1:
-                # world rank 0 waiting for ready rank
-                ready_rank = comm.recv(source=MPI_ANY_SOURCE, tag=2)
-                # a rank is now ready to recieve a message
-                print('incomplete_tasks', incomplete_tasks, flush=True)
-                print('incomplete_tasks.shape', incomplete_tasks.shape, flush=True)
-                print('incomplete_tasks.size', incomplete_tasks.size, flush=True)
-                
-                if incomplete_tasks.size != 0:
-                    message = incomplete_tasks[:num_tasks_per_rank]
-                    incomplete_tasks = np.delete(incomplete_tasks, appropriate_np_del_indices(np.arange(num_tasks_per_rank), len(incomplete_tasks)), axis=0)
-                else: #Done!
-                    message = 'done'
-                    done_ranks.append(ready_rank)
-                # world rank 0 sending message to ready_rank
-                comm.send(message, dest=ready_rank, tag=3)
-                # world rank 0 sent message to ready_rank
-        else:
-            loaded_soaps = {}
-            num_atoms_arr = np.load(os.path.join(kernel_calculation_path, 'num_atoms_arr.npy'))
-            while True:
-                comm.send(comm.rank, dest=0, tag=2)
-                # ready_rank told comm.rank 0 that it is ready to recieve a message from comm.rank 0
-                message = comm.recv(source=0, tag=3)
-                # ready_rank received message from comm.rank 0
-                if (type(message) is str and message == 'done') or len(message) == 0:
-                    break
+        comm.barrier()
+        if comm.rank != 0:
+            incomplete_tasks = get_incomplete_tasks(kernel_memmap_path, (num_structures, num_structures))
 
-                # message should be traversal order of the kernel matrix tasks such that it should be a np.array with shape (num_tasks_per_rank, 2) where
-                # each row has (as the first element) the struct index of a structure which should get its atomic env matrix repeated and (as the second element)
-                # the struct index of a structure which should get its atomic env matrix tiled.
-                # message is np.array with shape usually being (num_tasks_per_rank, 2) where each row is a pair of structures that need their similarities evaluated.
-                breathing_room_factor = min([12.0, comm.size])
-                for task_idx in range(len(message)):
-                    num_atoms_in_i, num_atoms_in_j = load_soaps(task_idx, loaded_soaps, message, num_atoms_arr, global_envs_dir, params.lowmem, params.lowestmem, breathing_room_factor)
-                    i,j = message[task_idx]
-                    sij = np.dot(loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)], loaded_soaps[str(j) + '_tile_' + str(num_atoms_in_i)])
-                    write_similarities_to_file(i, j, sij, num_structures, kernel_memmap_path)
-                    write_similarities_to_file(j, i, sij, num_structures, kernel_memmap_path)
+        incomplete_tasks = get_traversal_order(incomplete_tasks, kernel_calculation_path)
+        num_tasks_per_rank = int(np.ceil(float(len(incomplete_tasks)) / float(comm.size)))
+        if comm.rank < comm.size - 1:
+            incomplete_tasks = incomplete_tasks[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
+        else:
+            incomplete_tasks = incomplete_tasks[comm.rank * num_tasks_per_rank :]
+        loaded_soaps = {}
+        num_atoms_arr = np.load(os.path.join(kernel_calculation_path, 'num_atoms_arr.npy'))
+        # incomplete_tasks should be traversal order of the kernel matrix tasks such that it should be a np.array with shape (num_tasks_per_rank, 2) where
+        # each row has (as the first element) the struct index of a structure which should get its atomic env matrix repeated and (as the second element)
+        # the struct index of a structure which should get its atomic env matrix tiled.
+        # incomplete_tasks is np.array with shape usually being (num_tasks_per_rank, 2) where each row is a pair of structures that need their similarities evaluated.
+        breathing_room_factor = min([12.0, comm.size])
+        for task_idx in range(len(incomplete_tasks)):
+            num_atoms_in_i, num_atoms_in_j = load_soaps(task_idx, loaded_soaps, incomplete_tasks, num_atoms_arr, global_envs_dir, params.lowmem, params.lowestmem, breathing_room_factor)
+            i,j = incomplete_tasks[task_idx]
+            sij = np.dot(loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)], loaded_soaps[str(j) + '_tile_' + str(num_atoms_in_i)])
+            write_similarities_to_file(i, j, sij, num_structures, kernel_memmap_path)
+            write_similarities_to_file(j, i, sij, num_structures, kernel_memmap_path)
         start_time_krr = time.time()
-        root_print(comm,'time to calculate kernel', start_time_krr - start_time_kernel)
+        root_print(comm.rank,'time to calculate kernel', start_time_krr - start_time_kernel)
         # krr. Currently haven't implemented krr_test into the mpi version.
         if 'krr' not in params.process_list:
             rank_print(comm.rank, 'no krr; returning')
             return
         rank_print(comm.rank, 'entering krr')
-        if comm.rank == 0:
-            krr_task_list = get_krr_task_list(sname, param_path)
-            num_tasks_per_rank = int(np.ceil((load_balancing_factor * len(krr_task_list)) / (comm.size - 1)))
-            done_ranks = []
-            while len(done_ranks) != comm.size - 1:
-                # world rank 0 waiting for ready rank
-                ready_rank = comm.recv(source=MPI_ANY_SOURCE, tag=4)
-                # a rank is now ready to recieve a message
-                if len(krr_task_list) != 0:
-                    message = krr_task_list[:num_tasks_per_rank]
-                    krr_task_list = np.delete(krr_task_list, appropriate_np_del_indices(np.arange(num_tasks_per_rank), len(krr_task_list)))
-                    print('len(krr_task_list)', len(krr_task_list), flush=True)
-                else: #Done!
-                    message = 'done'
-                    print('done with krr', flush=True)
-                    done_ranks.append(ready_rank)
-                # world rank 0 sending message to ready_rank
-                print('sending krr message', message, 'to ready_rank', ready_rank)
-                comm.send(message, dest=ready_rank, tag=5)
-                # world rank 0 sent message to ready_rank
+        krr_task_list = get_krr_task_list(sname, param_path)
+        num_tasks_per_rank = int(np.ceil(float(len(krr_task_list)) / float(comm.size)))
+        if comm.rank < comm.size - 1:
+            krr_task_list = krr_task_list[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
         else:
-            params.setup_krr_params()
-            outfile_path = inst.get(sname, 'outfile')
-            props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
-            props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
-            sys_stdout_original = sys.stdout
-            while True:
-                comm.send(comm.rank, dest=0, tag=4)
-                # ready_rank told comm.rank 0 that it is ready to recieve a message from comm.rank 0
-                message = comm.recv(source=0, tag=5)
-                # ready_rank received message from comm.rank 0
-                if (type(message) is str and message == 'done') or len(message) == 0:
-                    rank_print(comm.rank, 'worker done with krr')
-                    break
-                # message is np.array with shape (,number of tasks) where each element is an ntrain path.
-                rank_print(comm.rank, 'message recieved in krr', message)
+            krr_task_list = krr_task_list[comm.rank * num_tasks_per_rank :]
+        params.setup_krr_params()
+        outfile_path = inst.get(sname, 'outfile')
+        props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
+        props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
+        sys_stdout_original = sys.stdout
+        # krr_task_list is np.array with shape (,number of tasks) where each element is an ntrain path.
+        rank_print(comm.rank, 'krr_task_list recieved in krr', krr_task_list)
 
-                for ntrain_path in message:
-                    rank_print(comm.rank, 'ntrain_path', ntrain_path)
-                    os.chdir(ntrain_path)
-                    ntrain, ntest, selection_method = get_specific_krr_params(ntrain_path)
-                    # do krr
-                    sys.stdout = open(outfile_path, 'w')
-                    krr.main(kernels=[kernel_memmap_path], props=[props_path], kweights=params.krr_standalone_options['kweights'], mode=selection_method, ntrain=ntrain,
-                                    ntest=ntest, ntrue=params.krr_standalone_options['ntrue'], csi=params.krr_standalone_options['csi'],
-                                    sigma=params.krr_standalone_options['sigma'], ntests=params.krr_standalone_options['ntests'], 
-                                    savevector=params.krr_standalone_options['saveweights'], refindex=params.krr_standalone_options['refindex'],
-                                    inweights=params.krr_standalone_options['pweights'])
+        for ntrain_path in krr_task_list:
+            rank_print(comm.rank, 'doing krr for ntrain_path', ntrain_path)
+            os.chdir(ntrain_path)
+            ntrain, ntest, selection_method = get_specific_krr_params(ntrain_path)
+            # do krr
+            sys.stdout = open(outfile_path, 'w')
+            krr.main(kernels=[kernel_memmap_path], props=[props_path], kweights=params.krr_standalone_options['kweights'], mode=selection_method, ntrain=ntrain,
+                            ntest=ntest, ntrue=params.krr_standalone_options['ntrue'], csi=params.krr_standalone_options['csi'],
+                            sigma=params.krr_standalone_options['sigma'], ntests=params.krr_standalone_options['ntests'], 
+                            savevector=params.krr_standalone_options['saveweights'], refindex=params.krr_standalone_options['refindex'],
+                            inweights=params.krr_standalone_options['pweights'])
         end_time_krr = time.time()
-        root_print(comm,'time for krr', end_time_krr - start_time_krr)
-        root_print(comm,'time for param', end_time_krr - start_time_param)
+        root_print(comm.rank,'time for krr', end_time_krr - start_time_krr)
+        root_print(comm.rank,'time for param', end_time_krr - start_time_param)
     end_time = time.time()
-    root_print(comm,'total time', end_time - start_time)
+    root_print(comm.rank,'total time', end_time - start_time)
                         
 
 
