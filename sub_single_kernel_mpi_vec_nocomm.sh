@@ -3,7 +3,7 @@
 #SBATCH -A m1980
 #SBATCH -C knl,quad,cache
 #SBATCH -N 1
-#SBATCH -t 00:10:00
+#SBATCH -t 00:30:00
 #SBATCH -J soap
 #SBATCH -o my_job.o%j
 
