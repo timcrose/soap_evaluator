@@ -956,7 +956,7 @@ def soap_workflow(params):
         outfile_path = inst.get(sname, 'outfile')
         props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
         props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
-        sys_stdout_original = sys.stdout
+        #sys_stdout_original = sys.stdout
         # krr_task_list is np.array with shape (,number of tasks) where each element is an ntrain path.
         rank_print(rank_output_path, 'krr_task_list recieved in krr', krr_task_list)
         just_krr_start_time = time.time()
@@ -967,7 +967,7 @@ def soap_workflow(params):
             os.chdir(ntrain_path)
             ntrain, ntest, selection_method = get_specific_krr_params(ntrain_path)
             # do krr
-            sys.stdout = open(outfile_path, 'w')
+            #sys.stdout = open(outfile_path, 'w')
             avg_test_R2 = krr.main(kernels=[kernel_memmap_path], props=[props_path], kweights=params.krr_standalone_options['kweights'], mode=selection_method, ntrain=ntrain,
                             ntest=ntest, ntrue=params.krr_standalone_options['ntrue'], csi=params.krr_standalone_options['csi'],
                             sigma=params.krr_standalone_options['sigma'], ntests=params.krr_standalone_options['ntests'], 
@@ -977,8 +977,8 @@ def soap_workflow(params):
             my_krr_results.append(params_set + [avg_test_R2])
             rank_print(rank_output_path, 'time to compute one krr with selection method {} is: {}'.format(selection_method, time.time() - one_krr_start_time))
         end_time_krr = time.time()
-        sys.stdout.close()
-        sys.stdout = sys_stdout_original
+        #sys.stdout.close()
+        #sys.stdout = sys_stdout_original
         rank_print(rank_output_path,'time for krr', end_time_krr - start_time_krr)
         rank_print(rank_output_path,'time for param', end_time_krr - start_time_param)
         root_print(comm_world.rank,'time for krr', end_time_krr - start_time_krr)
