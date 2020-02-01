@@ -680,6 +680,9 @@ def write_en_dat(wdir_path, structure_dir, out_fname, single_molecule_energy, nu
     '''
     out_fpath = os.path.join(wdir_path, out_fname)
     num_atoms_arr_outfpath = os.path.join(wdir_path, 'num_atoms_arr.npy')
+    if os.path.exists(num_atoms_arr_outfpath):
+        # This file already exists so this run must be restarting.
+        return
     json_files = file_utils.glob(os.path.join(structure_dir, '*.json'))
     if num_structures_to_use != 'all':
         json_files = json_files[: int(num_structures_to_use)]
@@ -936,8 +939,12 @@ def soap_workflow(params):
         
         # krr. Currently haven't implemented krr_test into the mpi version.
         if 'krr' not in params.process_list:
-            rank_print(rank_output_path, 'no krr; returning')
-            return
+            if num_param_combos is None:
+                rank_print(rank_output_path, 'no krr; moving on.')
+                continue
+            else:
+                rank_print(rank_output_path, 'no krr; Cant get R2 so cant get new param. Returning.')
+                return
         # barrier here to ensure kernel is completed before beginning krr.
         if comm.rank == 0:
             #create krr working directories (ntrain path)
