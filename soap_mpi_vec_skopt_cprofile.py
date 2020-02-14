@@ -6,24 +6,30 @@ from python_utils import file_utils
 from python_utils import math_utils
 from python_utils.list_utils import sort_by_col, flatten_list
 from python_utils.mpi_utils import parallel_mkdir
+import psutil
+from skopt_multiple_ask_before_tell import get_search_space_size, ask_opt, tell_opt
+from warnings import filterwarnings
+filterwarnings('ignore', message='The objective has been evaluated at this point before.')
+filterwarnings('ignore', category=FutureWarning)
+from skopt import Optimizer
+from skopt.space import Real, Integer
 import quippy
 from ibslib.io import read
 from libmatch.environments import alchemy
 from libmatch.structures import structure, structurelist
 from tools import krr
-import psutil
-from skopt import Optimizer
-from skopt.space import Real, Integer
 from socket import gethostname
 from mpi4py import MPI
 
-print('imported everything', flush=True)
+#print('imported everything', flush=True)
 inst_path = sys.argv[-1]
 inst = instruct.Instruct()
 inst.load_instruction_from_file(inst_path)
 comm_world = MPI.COMM_WORLD
 MPI_ANY_SOURCE = MPI.ANY_SOURCE
 num_param_combos = eval(inst.get('master', 'num_param_combos_per_replica'))
+ranks_per_node = eval(inst.get_with_default('master', 'ranks_per_node', 68))
+breathing_room_factor_per_node = eval(inst.get_with_default('master', 'breathing_room_factor_per_node', 1.2))
 if num_param_combos is not None:
     ord_sum_of_hostname = sum([ord(c) for c in gethostname()])
     ord_sums_of_hostnames = comm_world.gather(ord_sum_of_hostname, root=0)
@@ -94,8 +100,6 @@ class SetUpParams():
         self.inst = inst
 
         sname = 'master'
-        self.lowmem = eval(inst.get_with_default(sname, 'lowmem', True))
-        self.lowestmem = eval(inst.get_with_default(sname, 'lowestmem', True))
         self.structure_dir = inst.get(sname, 'structure_dir') # directory of jsons of structures
         self.process_list = inst.get_list(sname, 'sections')
         self.single_molecule_energy = eval(inst.get(sname, 'single_molecule_energy'))
@@ -103,6 +107,8 @@ class SetUpParams():
         self.num_structures_to_use = inst.get_with_default(sname, 'num_structures_to_use', 'all')
         
         sname = 'calculate_kernel'
+        self.lowmem = eval(inst.get_with_default(sname, 'lowmem', True))
+        self.lowestmem = eval(inst.get_with_default(sname, 'lowestmem', True))
         self.soap_param_list = ['time', 'python']
         self.soap_param_list += [inst.get(sname, 'glosim_path')]
 
@@ -279,39 +285,6 @@ class SetUpParams():
             return None
 
 
-def get_incomplete_tasks(kernel_memmap_path, shape):
-    '''
-    kernel_memmap_path: str
-        file path of the memmap which is the kernel.
-
-    shape: tuple of 2 ints
-        shape of the kernel memmap.
-
-    Return:
-    incomplete_tasks: np.array, shape (number of incomplete tasks, 2) or np.array([])
-        Each row of incomplete_tasks is a np.array shape (1,2) which is the index in the kerenel matrix
-        of a similarity entry that has not yet been calculated.
-
-    Notes: Because all entries of a memmap must be the same type, the default (incomplete)
-        values in the kernel is -11111.0
-
-    Purpose: Determine which, if any, similarities have not yet been computed.
-    '''
-    fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r', shape=shape)
-    incomplete_tasks_rows, incomplete_tasks_cols = np.where(fp == -11111.0)
-    # zip because np.where returns as an array of row indicies and an array of col indices but we want
-    # a row, col index pair (i,j)
-    zipped_incomplete_tasks = list(zip(incomplete_tasks_rows, incomplete_tasks_cols))
-    # sort because element i,j in the matrix is the same as j,i so we will remove the j,i
-    sorted_incomplete_tasks = np.sort(zipped_incomplete_tasks)
-    if sorted_incomplete_tasks.size == 0:
-        return np.array([])
-    # remove the j,i. Now we only have one element in incomplete tasks for every true task.
-    # Note that np.unique returns the sorted unique elements.
-    incomplete_tasks = np.unique(sorted_incomplete_tasks, axis=0)
-    return incomplete_tasks
-
-
 def modify_soap_hyperparam_list(param_list, params_to_get, params_set, dashes='-'):
     '''
     param_list: str
@@ -341,11 +314,70 @@ sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
               param_list[pos_p + 2 :]
     return param_list
 
-def write_similarities_to_file(i, j, sij, num_structures, kernel_memmap_path):
+
+def write_similarities_to_file(kernel_indices, similarities, kernel_memmap_path, num_structures=None, rank_output_path=None):
+    '''
+    kernel_indices: np.array, shape (number of pairs of structures that you have similarities for, 2)
+        Each row is an i,j pair such that the the i,j th element of the kernel matrix should be 
+        populated with the corresponding value in the input similarities. i.e. the kth row corresponds to
+        the value the i,j th position in the kernel that similarities[k] will supply. You should be
+        able to index the kernel by using the entire kernel_indices matrix. Therefore, kernel_indices 
+        must have the same length as similarities.
+
+    similarities: list or 1D array of float
+        Must have same length as kernel_indices. List of kernel values when the similarity is measured
+        between structure i and structure j. The order of similarities must therefore be the same order
+        as the i,j pairs in kernel_indices.
+
+    kernel_memmap_path: str
+        Path of the kernel np.memmap file which stores the kernel values in its matrix.
+
+    num_structures: int or None
+        If int, it is the number of structures in the kernel such that the shape of the kernel is
+        (num_structures,num_structures).
+        If None, determine the shape by reading in the memmap file and then reshaping to be square.
+
+    rank_output_path: str or None
+        Path to the log file for a single MPI rank. If None, no messages will be printed.
+    
+    Return: None
+
+    Purpose: Write all similarities belonging to the indices in kernel_indices to the kernel_memmap_path file.
+        This is much more efficient than writing similarities one at a time. The np.memmap is read
+        all at once and the values are assigned all at once. Because no other MPI rank will have the same
+        indices, no clashing should occur.
+    '''
+
+    if len(kernel_indices) != len(similarities):
+        raise Exception('len(kernel_indices) =', len(kernel_indices), 'should be equal to len(similarities) =',
+                        len(similarities), 'but they are not equal.')
+
+    if rank_output_path is not None:
+        #rank_print(rank_output_path, 'len(similarities)', len(similarities))
+        #rank_print(rank_output_path, 'similarities[:2]', similarities[:2])
+        #rank_print(rank_output_path, 'kernel_indices[:2]', kernel_indices[:2])
+        #rank_print(rank_output_path, 'type(kernel_indices[0][0])', type(kernel_indices[0][0]))
+        start_time = time.time()
+
+    if len(similarities) == 0:
+        return
+
     float32_size = 4
-    offset = (i * num_structures + j) * float32_size
-    fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r+', offset=offset, shape=(1, 1))
-    fp[:] = sij
+    if num_structures is None:
+        fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r+')
+        fp_len = len(fp)
+        fp.resize((int(np.sqrt(fp_len)), int(np.sqrt(fp_len))))
+    else:
+        fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r+', shape=(num_structures, num_structures))
+        if rank_output_path is not None:
+            rank_print(rank_output_path, 'time to load kernel_memmap_path', time.time() - start_time)
+    placement_list = np.vstack((kernel_indices[:,0], kernel_indices[:,1])), np.vstack((kernel_indices[:,1], kernel_indices[:,0]))
+    if rank_output_path is not None:
+        rank_print(rank_output_path, 'fp.flags', fp.flags)
+        start_time = time.time()
+    fp[placement_list] = np.vstack((similarities, similarities))
+    if rank_output_path is not None:
+        rank_print(rank_output_path, 'time to write to kernel_memmap_path', time.time() - start_time)
 
 
 def get_krr_task_list(param_path):
@@ -393,20 +425,20 @@ def root_print(rank, *print_message):
         print(print_message,flush=True)
 
 def rank_print(rank_output_path, *print_message):
+    '''
+    rank_output_path: str
+        Path to the log file for a single MPI rank.
+
+    print_message: anything
+        arguments to print()
+
+    Return: None
+
+    Purpose: write to a file that belongs to one MPI rank only
+        in order to prevent clashing.
+    '''
     with open(rank_output_path, mode='a') as f:
         print(print_message, file=f, flush=True)
-
-def task_complete(i, j, num_structures, kernel_memmap_path):
-    '''
-    Return: bool
-        True: task is already complete
-        False: task is incomplete
-    '''
-    float32_size = 4
-    offset = (i * num_structures + j) * float32_size
-    fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r', offset=offset, shape=(1, 1))
-    print('fp[0][0]',fp[0][0], 'fp[0][0] != -11111.0', fp[0][0] != -11111.0)
-    return fp[0][0] != -11111.0
 
 
 def get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_path):
@@ -436,17 +468,17 @@ def get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_p
     # 1D array containing the number of atoms in each structure in data_files.
     if not isinstance(incomplete_tasks, np.ndarray):
         raise TypeError('incomplete_tasks is not of type np.ndarray but it should be. Instead it has the type', type(incomplete_tasks))
+    num_atoms_arr = file_utils.safe_np_load(os.path.join(kernel_calculation_path, 'num_atoms_arr.npy'), time_frame=0.001, verbose=True)
     if incomplete_tasks.shape[0] == 0:
-        return incomplete_tasks
+        return incomplete_tasks, num_atoms_arr
     if len(incomplete_tasks.shape) != 2:
         raise ValueError('len(incomplete_tasks.shape) != 2, but it should be. Instead it has shape', incomplete_tasks.shape)
     if incomplete_tasks.shape[1] != 2:
         raise ValueError('incomplete_tasks.shape[1] != 2, but it should be. Instead it is', incomplete_tasks.shape[1])
-    num_atoms_arr = np.load(os.path.join(kernel_calculation_path, 'num_atoms_arr.npy'))
-    #rank_print(rank_output_path, 'num_atoms_arr',num_atoms_arr)
+
     if np.all(num_atoms_arr == num_atoms_arr[0]):
         rank_print(rank_output_path, 'returning given incomplete tasks')
-        return incomplete_tasks
+        return incomplete_tasks, num_atoms_arr
     else:
         arr_with_idx = np.vstack((np.arange(len(num_atoms_arr)), num_atoms_arr)).T
         c = Counter(num_atoms_arr)
@@ -454,10 +486,10 @@ def get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_p
         sorted_order_dct = {i:s for i,s in enumerate(argsorted_arr)}
 
     incomplete_tasks = np.array([[sorted_order_dct[i], sorted_order_dct[j]] for i,j in incomplete_tasks])
-    return incomplete_tasks
+    return incomplete_tasks, num_atoms_arr
 
 
-def delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, upperbound_bytes):
+def delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, upperbound_bytes, rank_output_path):
     '''
     loaded_soaps: dict
         Keys are structure indices with '_repeat' appended if it is repeated or '_tile' appended if it is tiled or
@@ -467,6 +499,8 @@ def delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, upperbound_
         List of names of matrices to keep for the current calculation
     upperbound_bytes: number
         An upper bound on the number of bytes needed to load the desired matrix
+    rank_output_path: str
+        Path for this MPI rank to write to its own file for log purposes.
 
     Return: None
     
@@ -475,7 +509,10 @@ def delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, upperbound_
         memory to load the matrices needed for the current calculation.
     '''
     # check if there is enough memory
+    rank_print(rank_output_path, 'Inside delete_some_unnecessary_matrices')
     while dict(psutil.virtual_memory()._asdict())['available'] < upperbound_bytes:
+        rank_print(rank_output_path, 'available memory: {}'.format(dict(psutil.virtual_memory()._asdict())['available']))
+        rank_print(rank_output_path, 'upperbound_bytes: {}'.format(upperbound_bytes))
         # delete a matrix that is stored but not used in the current calculation
         # To further improve upon what is currently being done: Could actually see if a particular matrix will be used later on and prefer to keep it if you could instead delete one that will not be used later on
         for loaded_soap in list(loaded_soaps.keys()):
@@ -503,7 +540,7 @@ def delete_all_unnecessary_matrices(loaded_soaps, matrices_to_keep):
             del loaded_soaps[loaded_soap]
     
 
-def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir, lowmem, lowestmem, breathing_room_factor):
+def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir, lowmem, lowestmem, breathing_room_factor, rank_output_path):
     '''
     task_idx: int
         index of current task in task_list
@@ -532,6 +569,8 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
         safe. Given that there are many MPI ranks trying to load matrices possibly simultaneously, this factor could 
         reasonably be as high as comm.size / node where node is the total number of nodes the program is running on
         and it is assumed that psutil just gets the available memory on the node of the requesting rank.
+    rank_output_path: str
+        Path for this MPI rank to write to its own file for log purposes.
 
     Return: int, int
         num_atoms_in_i, num_atoms_in_j
@@ -560,9 +599,11 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
         Index of the structure whose matrix to load for np.tile
     """
     i,j = task_list[task_idx]
+    if len(loaded_soaps) > 4:
+        rank_print(rank_output_path, 'len(loaded_soaps)', len(loaded_soaps))
     if len(loaded_soaps) == 0:
         # no soaps loaded yet, go ahead and load one
-        loaded_soaps[str(i)] = np.load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(i) + '.npy'))
+        loaded_soaps[str(i)] = file_utils.safe_np_load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(i) + '.npy'), time_frame=0.001, verbose=False)
     #print('loaded_soaps.keys()', loaded_soaps.keys(), flush=True)
     #print('list(loaded_soaps.keys())', list(loaded_soaps.keys()), flush=True)
     one_matrix = loaded_soaps[list(loaded_soaps.keys())[0]]
@@ -580,12 +621,12 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
             if lowestmem:
                 delete_all_unnecessary_matrices(loaded_soaps, matrices_to_keep)
             elif lowmem:
-                delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * bytes_per_atom * breathing_room_factor)
-            loaded_soaps[str(i)] = np.load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(i) + '.npy'))
+                delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * bytes_per_atom * breathing_room_factor, rank_output_path)
+            loaded_soaps[str(i)] = file_utils.safe_np_load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(i) + '.npy'), time_frame=0.001, verbose=False)
         if lowestmem:
             delete_all_unnecessary_matrices(loaded_soaps, matrices_to_keep)
         elif lowmem:
-            delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * num_atoms_in_j * bytes_per_atom * breathing_room_factor)
+            delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * num_atoms_in_j * bytes_per_atom * breathing_room_factor, rank_output_path)
         #print('loaded_soaps['+str(i)+']', loaded_soaps[str(i)])
         loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)] = np.repeat(loaded_soaps[str(i)], num_atoms_in_j, axis=0).flatten()
 
@@ -596,12 +637,12 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
             if lowestmem:
                 delete_all_unnecessary_matrices(loaded_soaps, matrices_to_keep)
             elif lowmem:
-                delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_j * bytes_per_atom * breathing_room_factor)
-            loaded_soaps[str(j)] = np.load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(j) + '.npy'))
+                delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_j * bytes_per_atom * breathing_room_factor, rank_output_path)
+            loaded_soaps[str(j)] = file_utils.safe_np_load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(j) + '.npy'), time_frame=0.001, verbose=False)
         if lowestmem:
             delete_all_unnecessary_matrices(loaded_soaps, matrices_to_keep)
         elif lowmem:
-            delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * num_atoms_in_j * bytes_per_atom * breathing_room_factor)
+            delete_some_unnecessary_matrices(loaded_soaps, matrices_to_keep, num_atoms_in_i * num_atoms_in_j * bytes_per_atom * breathing_room_factor, rank_output_path)
         loaded_soaps[str(j) + '_tile_' + str(num_atoms_in_i)] = np.tile(loaded_soaps[str(j)], (num_atoms_in_i, 1)).flatten()
 
     #Could insert a statement here to delete loaded_soaps[str(j)] if it's not needed in any future calculations to further save on memory
@@ -680,6 +721,9 @@ def write_en_dat(wdir_path, structure_dir, out_fname, single_molecule_energy, nu
     '''
     out_fpath = os.path.join(wdir_path, out_fname)
     num_atoms_arr_outfpath = os.path.join(wdir_path, 'num_atoms_arr.npy')
+    if os.path.exists(num_atoms_arr_outfpath):
+        # This file already exists so this run must be restarting.
+        return
     json_files = file_utils.glob(os.path.join(structure_dir, '*.json'))
     if num_structures_to_use != 'all':
         json_files = json_files[: int(num_structures_to_use)]
@@ -739,6 +783,7 @@ def soap_workflow(params):
         if os.path.exists(opt_pickle_fpath):
             with open(opt_pickle_fpath, 'rb') as f:
                 opt = pickle.load(f)
+            Int_vars = list(opt.space)    
         else:
             # We're using all Integer Dimension objects because it will reduce the search space, however, we want 0.5 level accuracy for now on
             # c, g, and zeta so I'm multiplying their ranges by 2 to get a value, and then later dividing that value by 2 to get the true value to 
@@ -756,14 +801,14 @@ def soap_workflow(params):
 
             print('n_lower_bound = {}, n_upper_bound = {}, l_lower_bound = {}, l_upper_bound = {}, c_lower_bound = {}, c_upper_bound = {}, g_lower_bound = {}, g_upper_bound = {}, zeta_lower_bound = {}, zeta_upper_bound = {},'.format(n_lower_bound, n_upper_bound, l_lower_bound, l_upper_bound, c_lower_bound, c_upper_bound, g_lower_bound, g_upper_bound, zeta_lower_bound, zeta_upper_bound), flush=True)
             print('c_precision = {}, g_precision = {}, zeta_precision = {}'.format(c_precision, g_precision, zeta_precision), flush=True)
-            
-            opt = Optimizer([
+            Int_vars = [
                 Integer(n_lower_bound, n_upper_bound),
                 Integer(l_lower_bound, l_upper_bound),
                 Integer(int(c_lower_bound / c_precision), int(c_upper_bound / c_precision)),
                 Integer(int(g_lower_bound / g_precision), int(g_upper_bound / g_precision)),
-                Integer(int(zeta_lower_bound / zeta_precision), int(zeta_upper_bound / zeta_precision))],
-                n_initial_points=50)
+                Integer(int(zeta_lower_bound / zeta_precision), int(zeta_upper_bound / zeta_precision))]
+            opt = Optimizer(Int_vars, n_initial_points=5)
+        search_space_size = get_search_space_size(Int_vars)
     
     root_print(comm_world.rank, 'using ' + str(comm.size) + ' MPI ranks on ' + str(params.num_structures_to_use) + ' structures.')
     start_time = time.time()
@@ -775,7 +820,7 @@ def soap_workflow(params):
             params_set = params_iter
         else:
             if comm_world.rank == 0:
-                params_sets = opt.ask(n_points=num_replicas, strategy='cl_max')
+                params_sets = ask_opt(opt, Int_vars, search_space_size, num_novel_pts_to_get=num_replicas, max_iterations=100, strategy='cl_min')
                 root_print(comm_world.rank, 'params_sets gotten when asked:', params_sets)
                 params_sets = [[math_utils.round(p,3,leave_int=True) for p in param_set] for param_set in params_sets]
                 root_print(comm_world.rank, 'rounded params_sets', params_sets)
@@ -810,15 +855,15 @@ def soap_workflow(params):
         
         param_path = os.path.join(soap_runs_dir, param_string)
         root_print(comm_world.rank, 'param_path', param_path)
-        parallel_mkdir(comm.rank, param_path)
+        parallel_mkdir(comm.rank, param_path, time_frame=0.001)
 
         rank_output_dir = os.path.join(param_path, 'output_log')
         rank_output_path = os.path.join(rank_output_dir, 'output_from_rank_' + str(comm.rank) + '.out')
-        parallel_mkdir(comm.rank, rank_output_dir)
+        parallel_mkdir(comm.rank, rank_output_dir, time_frame=0.001)
 
         kernel_calculation_path = os.path.abspath(os.path.join(param_path, 'calculate_kernel'))
         params.kernel_calculation_path = kernel_calculation_path
-        parallel_mkdir(comm.rank, kernel_calculation_path)
+        parallel_mkdir(comm.rank, kernel_calculation_path, time_frame=0.001)
 
         en_all_dat_fname = inst.get('krr', 'props')
         structure_dir = inst.get('master', 'structure_dir')
@@ -830,8 +875,7 @@ def soap_workflow(params):
         
         # Calculate global environments if not already calculated
         global_envs_dir = os.path.join(kernel_calculation_path, 'tmpstructures')
-        parallel_mkdir(comm.rank, global_envs_dir)
-        comm.barrier()
+        parallel_mkdir(comm.rank, global_envs_dir, time_frame=0.001)
 
         start_time_envs = time.time()
         num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
@@ -847,10 +891,15 @@ def soap_workflow(params):
             global_envs_incomplete_tasks = np.array(sorted(list(set(np.arange(num_structures)) - set([int(file_utils.fname_from_fpath(fpath).split('_')[1]) for fpath in file_utils.find(global_envs_dir, '*.dat')]))))
         else:
             global_envs_incomplete_tasks = np.arange(num_structures)
-        if comm.rank < comm.size - 1:
-            global_envs_incomplete_tasks = global_envs_incomplete_tasks[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
+
+        num_tasks = len(global_envs_incomplete_tasks)
+        tasks_per_rank = int(num_tasks / comm.size)
+        num_remainder_tasks = num_tasks - tasks_per_rank * comm.size
+        if comm.rank < num_remainder_tasks:
+            global_envs_incomplete_tasks = global_envs_incomplete_tasks[comm.rank * (tasks_per_rank + 1) : (comm.rank + 1) * (tasks_per_rank + 1)]
         else:
-            global_envs_incomplete_tasks = global_envs_incomplete_tasks[comm.rank * num_tasks_per_rank :]
+            global_envs_incomplete_tasks = global_envs_incomplete_tasks[num_remainder_tasks + comm.rank * tasks_per_rank : num_remainder_tasks + (comm.rank + 1) * tasks_per_rank]
+
         rank_print(rank_output_path, 'my assigned global environments to calculate:', global_envs_incomplete_tasks)
 
         alchem = alchemy(mu=params.soap_standalone_options['mu'])
@@ -888,56 +937,66 @@ def soap_workflow(params):
         
         # Calculate kernel if not already calculated
         kernel_memmap_path = os.path.join(kernel_calculation_path, 'kernel.dat')
+        # Not supporting restarts of kernel b/c it is so much slower to write one similarity at a time and also requires a comm.barrier.
+        incomplete_tasks_rows, incomplete_tasks_cols = np.triu_indices(num_structures)
+        root_print(comm.rank, 'incomplete_tasks_rows.shape', incomplete_tasks_rows.shape, 'incomplete_tasks_cols', incomplete_tasks_cols)
+        incomplete_tasks = np.array(list(zip(incomplete_tasks_rows, incomplete_tasks_cols)))
+        root_print(comm.rank, 'got incomplete_tasks from zip')
         if comm.rank == 0:
-            if os.path.exists(kernel_memmap_path):
-                incomplete_tasks = get_incomplete_tasks(kernel_memmap_path, (num_structures, num_structures))
-                print('got incomplete_tasks from get_incomplete_tasks', flush=True)
-            else:
-                incomplete_tasks_rows, incomplete_tasks_cols = np.triu_indices(num_structures)
-                print('incomplete_tasks_rows.shape', incomplete_tasks_rows.shape, 'incomplete_tasks_cols', incomplete_tasks_cols, flush=True)
-                incomplete_tasks = np.array(list(zip(incomplete_tasks_rows, incomplete_tasks_cols)))
-                print('got incomplete_tasks from zip', flush=True)
-                fp = np.memmap(kernel_memmap_path, dtype='float32', mode='w+', shape=(num_structures, num_structures))
-                # Initialize to -11111.0 just so we know that if it's -11111.0 that it's incomplete
-                fp[:] = np.ones((num_structures, num_structures), dtype='float32') * -11111.0
-                del fp
-            print('getting kernel traversal order', flush=True)
-            print('b4 incomplete_tasks.shape', incomplete_tasks.shape, flush=True)
-            print('b4 incomplete_tasks.size', incomplete_tasks.size, flush=True)
-        comm.barrier()
-        if comm.rank != 0:
-            incomplete_tasks = get_incomplete_tasks(kernel_memmap_path, (num_structures, num_structures))
+            fp = np.memmap(kernel_memmap_path, dtype='float32', mode='w+', shape=(num_structures, num_structures))
+            del fp
+        root_print(comm.rank, 'getting kernel traversal order')
+        root_print(comm.rank, 'b4 incomplete_tasks.shape', incomplete_tasks.shape)
+        root_print(comm.rank, 'b4 incomplete_tasks.size', incomplete_tasks.size)
 
-        incomplete_tasks = get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_path)
-        num_tasks_per_rank = int(np.ceil(float(len(incomplete_tasks)) / float(comm.size)))
-        if comm.rank < comm.size - 1:
-            incomplete_tasks = incomplete_tasks[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
+        incomplete_tasks, num_atoms_arr = get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_path)
+
+        num_tasks = len(incomplete_tasks)
+        tasks_per_rank = int(num_tasks / comm.size)
+        num_remainder_tasks = num_tasks - tasks_per_rank * comm.size
+        if comm.rank < num_remainder_tasks:
+            incomplete_tasks = incomplete_tasks[comm.rank * (tasks_per_rank + 1) : (comm.rank + 1) * (tasks_per_rank + 1)]
         else:
-            incomplete_tasks = incomplete_tasks[comm.rank * num_tasks_per_rank :]
-        rank_print(rank_output_path, 'For kernel computation, got incomplete_tasks', incomplete_tasks)
+            incomplete_tasks = incomplete_tasks[num_remainder_tasks + comm.rank * tasks_per_rank : num_remainder_tasks + (comm.rank + 1) * tasks_per_rank]
+
+        rank_print(rank_output_path, 'For kernel computation, got {} incomplete_tasks'.format(len(incomplete_tasks)), incomplete_tasks)
         loaded_soaps = {}
-        num_atoms_arr = np.load(os.path.join(kernel_calculation_path, 'num_atoms_arr.npy'))
         # incomplete_tasks should be traversal order of the kernel matrix tasks such that it should be a np.array with shape (num_tasks_per_rank, 2) where
         # each row has (as the first element) the struct index of a structure which should get its atomic env matrix repeated and (as the second element)
         # the struct index of a structure which should get its atomic env matrix tiled.
         # incomplete_tasks is np.array with shape usually being (num_tasks_per_rank, 2) where each row is a pair of structures that need their similarities evaluated.
-        breathing_room_factor = min([12.0, comm.size])
+        breathing_room_factor = ranks_per_node * breathing_room_factor_per_node
         just_kernel_start_time = time.time()
+        my_kernel_data = []
         for task_idx in range(len(incomplete_tasks)):
-            num_atoms_in_i, num_atoms_in_j = load_soaps(task_idx, loaded_soaps, incomplete_tasks, num_atoms_arr, global_envs_dir, params.lowmem, params.lowestmem, breathing_room_factor)
+            num_atoms_in_i, num_atoms_in_j = load_soaps(task_idx, loaded_soaps, incomplete_tasks, num_atoms_arr, global_envs_dir, params.lowmem, params.lowestmem, breathing_room_factor, rank_output_path)
             i,j = incomplete_tasks[task_idx]
             sij = np.dot(loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)], loaded_soaps[str(j) + '_tile_' + str(num_atoms_in_i)]) ** zeta
-            write_similarities_to_file(i, j, sij, num_structures, kernel_memmap_path)
-            write_similarities_to_file(j, i, sij, num_structures, kernel_memmap_path)
+            my_kernel_data.append([i, j, sij])
+        rank_print(rank_output_path, 'time to compute kernel entries for {} entries: {}'.format(len(incomplete_tasks), time.time() - just_kernel_start_time))
+        write_kernel_start_time = time.time()
+        kernel_data = comm.gather(my_kernel_data, root=0)
+        if comm.rank == 0:
+            kernel_data = np.vstack(kernel_data)
+            write_similarities_to_file(np.int64(kernel_data[:,:2]), kernel_data[:,2], kernel_memmap_path, num_structures=num_structures, rank_output_path=rank_output_path)
+            del kernel_data
+        del my_kernel_data
+        del incomplete_tasks
         start_time_krr = time.time()
-        rank_print(rank_output_path,'time to calculate kernel', start_time_krr - start_time_kernel)
-        root_print(comm_world.rank,'time to calculate kernel', start_time_krr - start_time_kernel)
-        rank_print(rank_output_path, 'time to compute kernel entries for {} entries: {}'.format(len(incomplete_tasks), start_time_krr - just_kernel_start_time))
+        if comm.rank == 0:
+            rank_print(rank_output_path,'time to calculate kernel', start_time_krr - start_time_kernel)
+            root_print(comm_world.rank,'time to calculate kernel', start_time_krr - start_time_kernel)
+            rank_print(rank_output_path,'time to gather and write kernel', start_time_krr - write_kernel_start_time)
+            
         
         # krr. Currently haven't implemented krr_test into the mpi version.
         if 'krr' not in params.process_list:
-            rank_print(rank_output_path, 'no krr; returning')
-            return
+            if num_param_combos is None:
+                rank_print(rank_output_path, 'no krr; moving on.')
+                continue
+            else:
+                rank_print(rank_output_path, 'no krr; Cant get R2 so cant get new param. Returning.')
+                return
         # barrier here to ensure kernel is completed before beginning krr.
         if comm.rank == 0:
             #create krr working directories (ntrain path)
@@ -946,12 +1005,15 @@ def soap_workflow(params):
         rank_print(rank_output_path, 'entering krr')
 
         krr_task_list = get_krr_task_list(param_path)
-        num_tasks_per_rank = int(np.ceil(float(len(krr_task_list)) / float(comm.size)))
-        rank_print(rank_output_path, 'overall krr_task_list', krr_task_list)
-        if comm.rank < comm.size - 1:
-            krr_task_list = krr_task_list[comm.rank * num_tasks_per_rank : (comm.rank + 1) * num_tasks_per_rank]
+        
+        num_tasks = len(krr_task_list)
+        tasks_per_rank = int(num_tasks / comm.size)
+        num_remainder_tasks = num_tasks - tasks_per_rank * comm.size
+        if comm.rank < num_remainder_tasks:
+            krr_task_list = krr_task_list[comm.rank * (tasks_per_rank + 1) : (comm.rank + 1) * (tasks_per_rank + 1)]
         else:
-            krr_task_list = krr_task_list[comm.rank * num_tasks_per_rank :]
+            krr_task_list = krr_task_list[num_remainder_tasks + comm.rank * tasks_per_rank : num_remainder_tasks + (comm.rank + 1) * tasks_per_rank]
+
         params.setup_krr_params()
         outfile_path = inst.get(sname, 'outfile')
         props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
@@ -1021,7 +1083,7 @@ def soap_workflow(params):
                 root_print(comm_world.rank, 'overall_krr_results_matrix after prec', overall_krr_results_matrix)
                 root_print(comm_world.rank, 'list(map(list, np.int64(np.around(overall_krr_results_matrix[:,:-1]))))', np.int64(np.around(list(map(list, overall_krr_results_matrix[:,:-1])))))
                 # Use np.int64 since we're using all Integer Dimension objects
-                opt.tell(list(map(list, overall_krr_results_matrix[:,:-1])), list(overall_krr_results_matrix[:,-1]))
+                opt = tell_opt(opt, list(map(list, overall_krr_results_matrix[:,:-1])), list(overall_krr_results_matrix[:,-1]))
                 with open(opt_pickle_fpath, 'wb') as f:
                     pickle.dump(opt, f)
         elif comm.rank == 0:

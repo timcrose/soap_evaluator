@@ -1,6 +1,7 @@
 from python_utils import file_utils, list_utils, math_utils
 import numpy as np
 from copy import deepcopy
+import matplotlib.pyplot as plt
 
 def get_num_structs_to_use(soap_owd):
     '''
@@ -16,7 +17,7 @@ def get_num_structs_to_use(soap_owd):
         of structures is output in output files.
     '''
     soap_conf_fpath = file_utils.os.path.join(soap_owd, 'soap.conf')
-    print('Parsing', soap_conf_fpath, flush=True)
+    print('Parsing', soap_conf_fpath, 'for num_structures_to_use', flush=True)
     found_lines = file_utils.grep('num_structures_to_use', soap_conf_fpath, read_mode='r', fail_if_DNE=True)
     if len(found_lines) > 0:
         found_line = found_lines[0]
@@ -37,7 +38,7 @@ def get_num_cores(soap_owd):
     Purpose: Parse output.out in soap_owd for number of MPI ranks used.
     '''
     output_fpath = file_utils.os.path.join(soap_owd, 'output.out')
-    print('Parsing', output_fpath, flush=True)
+    print('Parsing', output_fpath, 'for number of MPI ranks', flush=True)
     found_lines = file_utils.grep(' MPI ranks on ', output_fpath, read_mode='r', fail_if_DNE=True)
     if len(found_lines) > 0:
         found_line = found_lines[0]
@@ -46,6 +47,17 @@ def get_num_cores(soap_owd):
     #print(int(found_line.split()[1]))
     # format: ('using 2 MPI ranks on 1200 structures.',)
     return int(found_line.split()[1])
+
+
+def get_param_values(param_path):
+    param_basename = file_utils.os.path.basename(param_path)
+    #format n8-l8-c10.0-g0.7-zeta1.0
+    n = int(param_basename.split('-')[0].split('n')[-1])
+    l = int(param_basename.split('-')[1].split('l')[-1])
+    c = float(param_basename.split('-')[2].split('c')[-1])
+    g = float(param_basename.split('-')[3].split('g')[-1])
+    zeta = float(param_basename.split('-')[4].split('zeta')[-1])
+    return n, l, c, g, zeta
 
 
 def get_avg_time(param_path, data_key):
@@ -66,20 +78,16 @@ def get_avg_time(param_path, data_key):
         get the average for all MPI ranks in a particular param_path.
     '''
     search_str_dct = {'total_time' : 'total time', 'kernel_time' : 'time to calculate kernel',
-                        'env_time' : 'calculate environments'}
+                        'env_time' : 'calculate environments', 'param_time': 'time for param'}
     outfiles = file_utils.find(param_path, 'output_from_rank*')
     #print('outfiles', outfiles, flush=True)
     found_lines = file_utils.grep(search_str_dct[data_key], outfiles, verbose=True)
     #print('found_lines', found_lines, flush=True)
     time_lst = []
     for found_line in found_lines:
-        if data_key == 'total_time':
+        if data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time':
             # format: ('total time', 156.7616991996765)
-            time_lst.append(float(found_line.split()[-1].split(')')[0]))
-        elif data_key == 'kernel_time':
             # format: ('time to calculate kernel', 124.95694470405579)
-            time_lst.append(float(found_line.split()[-1].split(')')[0]))
-        elif data_key == 'env_time':
             # format: ('time to read input structures and calculate environments', 11.158977270126343)
             time_lst.append(float(found_line.split()[-1].split(')')[0]))
     if len(time_lst) > 0:
@@ -121,13 +129,24 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
         param_paths = file_utils.find(soap_owd, '*zeta*')
         data_bit = -55555.0 * np.ones((len(param_paths), len(data_to_get)))
         for i, param_path in enumerate(param_paths):
+            n, l, c, g, zeta = get_param_values(param_path)
             for j, data_key in enumerate(data_to_get):
                 if data_key == 'num_structures_to_use':
                     data_bit[i,j] = math_utils.round(get_num_structs_to_use(soap_owd), num_decimal_places)
                 elif data_key == 'num_cores':
                     data_bit[i,j] = math_utils.round(get_num_cores(soap_owd), num_decimal_places)
-                elif data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time':
+                elif data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time':
                     data_bit[i, j] = math_utils.round(get_avg_time(param_path, data_key), num_decimal_places)
+                elif data_key == 'n':
+                    data_bit[i,j] = n
+                elif data_key == 'l':
+                    data_bit[i,j] = l
+                elif data_key == 'g':
+                    data_bit[i,j] = g
+                elif data_key == 'c':
+                    data_bit[i,j] = c
+                elif data_key == 'zeta':
+                    data_bit[i,j] = zeta
             
         if data_matrix is None:
             data_matrix = deepcopy(data_bit)
@@ -139,16 +158,48 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
     return list(map(list, data_matrix))
 
 
+def plot_data(data_matrix, data_to_get):
+    y_var = 'kernel_time'
+    x_var = 'num_cores'
+    append_to_title = '_target1_2mpc_at_n-8,l-8,c4.0,g-0.7'
+
+    col_dct = {d:data_to_get.index(d) for d in data_to_get}
+    data_matrix = np.array(data_matrix)
+    axis_label_dct = {'n':'number of radial basis functions',
+                      'l':'number of angular basis functions',
+                      'c':'cutoff radius',
+                      'R^2':'Test set R^2',
+                      'param_time': 'Total time taken for the workflow of this parameter set (s)',
+                      'num_cores': 'Number of MPI ranks',
+                      'kernel_time': 'Time to construct the kernel'}
+    plot_title = y_var + '_vs_' + x_var + append_to_title
+    y_axis_label = axis_label_dct[y_var]
+    x_axis_label = axis_label_dct[x_var]
+
+    f = plt.figure()
+    plt.title(plot_title)
+    plt.ylabel(y_axis_label)
+    plt.xlabel(x_axis_label)
+    plt.plot(data_matrix[:,col_dct[x_var]], data_matrix[:,col_dct[y_var]], '-o')
+    f.savefig(plot_title + '.png', bbox_inches='tight')
+
+
 def main():
-    outfile_fpath = 'num_cores_benchmark_data.csv'
-    data_to_get = ['num_cores', 'kernel_time', 'env_time', 'total_time']
+    outfile_fpath = 'benchmark_data.csv'
+    data_to_get = ['param_time', 'num_cores', 'kernel_time', 'env_time', 'n', 'l', 'c', 'g', 'zeta']
     sort_by = 'num_cores'
     num_decimal_places = 1
-    soap_owds = file_utils.find('/global/cscratch1/sd/trose/soap_run_calcs/benchmarks/vary_num_cores', 'num_cores*')
+    soap_owds = file_utils.find(file_utils.os.getcwd(), 'num_cores*')
+    #soap_owds = ['/global/cscratch1/sd/trose/soap_run_calcs/target1/2mpc/hyperparameter_optimization/cutoff']
     print('soap_owds', soap_owds, flush=True)
     data_matrix = get_data(data_to_get, soap_owds, num_decimal_places=num_decimal_places, sort_by=sort_by)
+
+    plot_data(data_matrix, data_to_get)
+
+    data_matrix = [data_to_get] + data_matrix
     print('data_matrix', flush=True)
     print(data_matrix, flush=True)
+    file_utils.rm(outfile_fpath)
     file_utils.write_rows_to_csv(outfile_fpath, data_matrix)
 
 if __name__ == '__main__':

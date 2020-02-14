@@ -98,7 +98,7 @@ class SetUpParams():
         self.inst = inst
 
         sname = 'master'
-        self.structure_dir = inst.get(sname, 'structure_dir') # directory of jsons of structures
+        self.structure_dirs = inst.get_list(sname, 'structure_dis') # directories of jsons of structures
         self.process_list = inst.get_list(sname, 'sections')
         self.single_molecule_energy = eval(inst.get(sname, 'single_molecule_energy'))
         self.xyz_file_basename = inst.get(sname, 'xyz_file_basename')
@@ -166,6 +166,7 @@ class SetUpParams():
 
     def setup_krr_params(self):
         sname = 'krr'
+        self.struct_dir_pct_lst = self.inst.get_list(sname, 'struct_dir_pct_lst')
         self.krr_param_list = ['time', 'python']
         self.krr_param_list += [self.inst.get(sname, 'krr_path')]
         self.krr_standalone_options = {}
@@ -836,6 +837,28 @@ def soap_workflow(params):
         search_space_size = get_search_space_size(Int_vars)
     
     root_print(comm_world.rank, 'using ' + str(comm.size) + ' MPI ranks on ' + str(params.num_structures_to_use) + ' structures.')
+
+    data_files = []
+    struct_dir_idx_lst = []
+    for struct_dir_idx,structure_dir in enumerate(params.structure_dirs):
+        found_data_files = file_utils.glob(os.path.join(structure_dir, '*.json'))
+        data_files += found_data_files
+        struct_dir_idx_lst += [struct_dir_idx] * len(found_data_files)
+        
+
+
+
+    params.struct_dir_pct_lst
+
+
+
+
+
+    '''
+    if params.num_structures_to_use != 'all':
+        data_files = data_files[: int(params.num_structures_to_use)]
+    '''
+
     start_time = time.time()
 
     for params_iter in iterable:
@@ -900,13 +923,9 @@ def soap_workflow(params):
         parallel_mkdir(comm.rank, kernel_calculation_path, time_frame=0.001)
 
         en_all_dat_fname = inst.get('krr', 'props')
-        structure_dir = inst.get('master', 'structure_dir')
+        
         num_structures_to_use = inst.get_with_default('master', 'num_structures_to_use', 'all')
         single_molecule_energy = eval(inst.get('master', 'single_molecule_energy'))
-
-        data_files = file_utils.glob(os.path.join(params.structure_dir, '*.json'))
-        if params.num_structures_to_use != 'all':
-            data_files = data_files[: int(params.num_structures_to_use)]
 
         if comm.rank == 0:
             write_en_dat(kernel_calculation_path, structure_dir, en_all_dat_fname, single_molecule_energy, num_structures_to_use)
