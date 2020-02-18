@@ -18,7 +18,7 @@ def main():
                 continue
             
             color_on = 'R^2'
-            append_to_title = '_target1_2mpc'
+            append_to_title = '_target13_2mpc'
 
             fp = np.memmap(krr_results_fpath, dtype='float32', mode='c')
             fp_len = len(fp)
