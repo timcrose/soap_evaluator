@@ -1,10 +1,10 @@
-import os, sys, time, itertools
+import os, sys, time, itertools, psutil
 import numpy as np
 import instruct
 from copy import deepcopy
+from collections import Counter
 from python_utils import file_utils, math_utils, list_utils, mpi_utils
-from python_utils.mpi_utils import parallel_mkdir
-import psutil
+from put_struct_dir_pct_in_arr import put_struct_dir_pct_in_arr
 from skopt_multiple_ask_before_tell import get_search_space_size, ask_opt, tell_opt
 from warnings import filterwarnings
 filterwarnings('ignore', message='The objective has been evaluated at this point before.')
@@ -98,11 +98,12 @@ class SetUpParams():
         self.inst = inst
 
         sname = 'master'
-        self.structure_dir = inst.get(sname, 'structure_dir') # directory of jsons of structures
+        self.structure_dirs = inst.get_list(sname, 'structure_dirs') # directories of jsons of structures
         self.process_list = inst.get_list(sname, 'sections')
         self.single_molecule_energy = eval(inst.get(sname, 'single_molecule_energy'))
-        self.xyz_file_basename = inst.get(sname, 'xyz_file_basename')
         self.num_structures_to_use = inst.get_with_default(sname, 'num_structures_to_use', 'all')
+        if self.num_structures_to_use != 'all':
+            self.num_structures_to_use = int(self.num_structures_to_use)
         
         sname = 'calculate_kernel'
         self.lowmem = eval(inst.get_with_default(sname, 'lowmem', True))
@@ -156,16 +157,13 @@ class SetUpParams():
             if param_to_add is not None:
                 self.soap_param_list += param_to_add
 
-        sname = 'create_rect'
-        self.create_rect_param_list = ['time', 'python']
-        self.create_rect_param_list += [inst.get(sname, 'glosim_path')]
-        for option, option_string, default in glosim_soap_options:
-            param_to_add = self.add_to_param_list(inst, sname, option, option_string)
-            if param_to_add is not None:
-                self.create_rect_param_list += param_to_add
 
     def setup_krr_params(self):
         sname = 'krr'
+        if not self.inst.has_section(sname):
+            return
+        self.test_struct_dir_pct_lst = self.inst.get_list(sname, 'test_struct_dir_pct_lst')
+        self.train_struct_dir_pct_lst = self.inst.get_list(sname, 'train_struct_dir_pct_lst')
         self.krr_param_list = ['time', 'python']
         self.krr_param_list += [self.inst.get(sname, 'krr_path')]
         self.krr_standalone_options = {}
@@ -187,49 +185,6 @@ class SetUpParams():
             param_to_add = self.add_to_param_list(self.inst, sname, option, option_string)
             if param_to_add is not None:
                 self.krr_param_list += param_to_add
-
-    def setup_krr_test_params(self):
-        sname = 'krr_test'
-        self.krr_test_param_list = ['time', 'python']
-        self.krr_test_param_list += [self.inst.get(sname, 'krr_test_path')]
-        for option, option_string in [['kernels', '--kernels'],
-                                      ['weights', '--weights'],
-                                      ['kweights', '--kweights'],
-                                      ['props', '--props'],
-                                      ['csi', '--csi'],
-                                      ['noidx', '--noidx']
-                                     ]:
-
-            param_to_add = self.add_to_param_list(self.inst, sname, option, option_string)
-            if param_to_add is not None:
-                self.krr_test_param_list += param_to_add
-
-
-    def get_kernel_fname(self, sname):
-        '''
-        sname: str
-            section name in inst.
-
-        Note: it is assumed you are in the path to current soap directory
-        Purpose: Get the filename of the kernel file. Use glob to avoid 
-            many lines to derive the correct name like is done in glosim.py.
-        '''
-        if sname == 'krr':
-            search_str = '.k'
-            search_str_avoid = 'rect'
-            start_path = self.kernel_calculation_path
-            test_str = ''
-        elif sname == 'krr_test':
-            search_str = 'rect'
-            search_str_avoid = 'no_strs_to_avoid'
-            start_path = '.'
-            test_str = 'itest' + str(self.itest) + '*'
-
-        file_list = file_utils.glob(os.path.join(start_path, '*' + test_str))
-        for fname in file_list:
-            if search_str in fname and search_str_avoid not in fname:
-                return fname
-        return None
 
 
     def add_standalone_soap_params(self, inst, sname, option, default):
@@ -255,10 +210,9 @@ class SetUpParams():
             pass
         self.krr_standalone_options[option] = value
 
-
     def add_to_param_list(self, inst, sname, option, option_string):
         if 'kernel' in option and 'krr' in sname:
-            value = self.get_kernel_fname(sname)
+            value = 'kernel.dat'
             if sname == 'krr' or sname == 'krr_test':
                 return [option_string, value]
             return [value]
@@ -281,36 +235,6 @@ class SetUpParams():
             return [option_string, value]
         except:
             return None
-
-
-def modify_soap_hyperparam_list(param_list, params_to_get, params_set, dashes='-'):
-    '''
-    param_list: str
-        List of params to pass to glosim to compute kernel.
-        Ex:
-sys.path.append(os.path.join(os.environ["HOME"], "python_utils"))
-         'train.xyz', '--periodic', '-n', '[5, 8]', '-l', '[1]',
-         '-c', '[1]', '-g', '[0.7, 1.1]', '--kernel', 'average',
-         '--unsoap', '--np', '1']
-    params_to_get: list
-        The hyperparams: ['n','l','c','g']
-    params_set: iterable
-        The value for each hyperparam in params_to_get
-
-    Return: list
-        modified param string list
-    Purpose: If you define lists of possible soap hyperparams, then
-        you can't get the particular set until you are running
-        through the for loops in soap_workflow. So, we need to 
-        replace the list of values for each hyperparam by 
-        the current desired value of that hyperparam.
-    '''
-    for i, p in enumerate(params_to_get):
-        pos_p = param_list.index(dashes + p)
-        param_list = param_list[: pos_p + 1] + \
-              [str(params_set[i])] + \
-              param_list[pos_p + 2 :]
-    return param_list
 
 
 def write_similarities_to_file(kernel_indices, similarities, kernel_memmap_path, num_structures=None, rank_output_path=None):
@@ -369,11 +293,16 @@ def write_similarities_to_file(kernel_indices, similarities, kernel_memmap_path,
         fp = np.memmap(kernel_memmap_path, dtype='float32', mode='r+', shape=(num_structures, num_structures))
         if rank_output_path is not None:
             rank_print(rank_output_path, 'time to load kernel_memmap_path', time.time() - start_time)
-    placement_list = np.vstack((kernel_indices[:,0], kernel_indices[:,1])), np.vstack((kernel_indices[:,1], kernel_indices[:,0]))
+    placement_list = np.vstack((kernel_indices[:,0], kernel_indices[:,1])).flatten(), np.vstack((kernel_indices[:,1], kernel_indices[:,0])).flatten()
     if rank_output_path is not None:
         rank_print(rank_output_path, 'fp.flags', fp.flags)
         start_time = time.time()
-    fp[placement_list] = np.vstack((similarities, similarities))
+    
+    if rank_output_path is not None:
+        rank_print(rank_output_path, 'similarities.shape', similarities.shape)
+        rank_print(rank_output_path, 'np.vstack((similarities, similarities)).shape', np.vstack((similarities, similarities)).shape)
+        rank_print(rank_output_path, 'fp[placement_list].shape', fp[placement_list].shape)
+    fp[placement_list] = np.vstack((similarities, similarities)).flatten()
     if rank_output_path is not None:
         rank_print(rank_output_path, 'time to write to kernel_memmap_path', time.time() - start_time)
 
@@ -483,7 +412,7 @@ def get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_p
         argsorted_arr = np.array(sorted(arr_with_idx, key=lambda x:(c[x[1]], x[1])))[:,0]
         sorted_order_dct = {i:s for i,s in enumerate(argsorted_arr)}
 
-    incomplete_tasks = np.array([[sorted_order_dct[i], sorted_order_dct[j]] for i,j in incomplete_tasks])
+    incomplete_tasks = np.array([[int(sorted_order_dct[i]), int(sorted_order_dct[j])] for i,j in incomplete_tasks])
     return incomplete_tasks, num_atoms_arr
 
 
@@ -601,7 +530,9 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
     #    rank_print(rank_output_path, 'len(loaded_soaps)', len(loaded_soaps))
     if len(loaded_soaps) == 0:
         # no soaps loaded yet, go ahead and load one
+        rank_print(rank_output_path, 'about to load a soap for i = {}'.format(i))
         loaded_soaps[str(i)] = file_utils.safe_np_load(os.path.join(global_envs_dir, 'atomic_envs_matrix_' + str(i) + '.npy'), time_frame=0.001, verbose=False)
+        rank_print(rank_output_path, 'loaded a soap')
     #print('loaded_soaps.keys()', loaded_soaps.keys(), flush=True)
     #print('list(loaded_soaps.keys())', list(loaded_soaps.keys()), flush=True)
     one_matrix = loaded_soaps[list(loaded_soaps.keys())[0]]
@@ -612,8 +543,8 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
     #print('num_atoms_in_i', num_atoms_in_i)
     num_atoms_in_j = int(num_atoms_arr[j])
 
-    matrices_to_keep = [str(i), str(j), str(i) + '_repeat_' + str(num_atoms_in_j), str(j) + '_tile_' + str(num_atoms_in_i)]
-
+    matrices_to_keep = list(set([str(i), str(j), str(i) + '_repeat_' + str(num_atoms_in_j), str(j) + '_tile_' + str(num_atoms_in_i)]))
+    rank_print(rank_output_path, 'matrices_to_keep', matrices_to_keep)
     if str(i) + '_repeat_' + str(num_atoms_in_j) not in loaded_soaps:    
         if str(i) not in loaded_soaps:
             if lowestmem:
@@ -628,6 +559,7 @@ def load_soaps(task_idx, loaded_soaps, task_list, num_atoms_arr, global_envs_dir
         #print('loaded_soaps['+str(i)+']', loaded_soaps[str(i)])
         loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)] = np.repeat(loaded_soaps[str(i)], num_atoms_in_j, axis=0).flatten()
 
+    rank_print(rank_output_path, 'loaded_soaps.keys()', list(loaded_soaps.keys()))
     #Could insert a statement here to delete loaded_soaps[str(i)] if it's not needed in any future calculations to further save on memory
 
     if str(j) + '_tile_' + str(num_atoms_in_i) not in loaded_soaps:
@@ -698,12 +630,12 @@ def normalized_BE_by_napc(napc, nmpc, total_energy, single_molecule_energy, BE=N
         BE = binding_energy(nmpc, total_energy, single_molecule_energy)
     return BE / float(napc)
 
-def write_en_dat(wdir_path, structure_dir, out_fname, single_molecule_energy, num_structures_to_use, energy_name='energy'):
+def write_en_dat(wdir_path, data_files, out_fname, single_molecule_energy, energy_name='energy'):
     '''
     wdir_path: str
         Directory to write the energy dat file to.
-    structure_dir: str
-        path to directory containing jsons with structures
+    data_files: list of str
+        List of paths to .json files, each with a structure.
     out_fname: str
         File name of the desired outputted dat file. (Must end with .dat)
     single_molecule_energy: float
@@ -722,12 +654,10 @@ def write_en_dat(wdir_path, structure_dir, out_fname, single_molecule_energy, nu
     if os.path.exists(num_atoms_arr_outfpath):
         # This file already exists so this run must be restarting.
         return
-    json_files = file_utils.glob(os.path.join(structure_dir, '*.json'))
-    if num_structures_to_use != 'all':
-        json_files = json_files[: int(num_structures_to_use)]
+    
     num_atoms_lst = []
     with open(out_fpath, mode='w') as f:
-        for json_file in json_files:
+        for json_file in data_files:
             struct = file_utils.get_dct_from_json(json_file, load_type='load')
             if 'properties' in struct and energy_name in struct['properties']:
                 en=float(struct['properties'][energy_name])
@@ -836,6 +766,9 @@ def soap_workflow(params):
         search_space_size = get_search_space_size(Int_vars)
     
     root_print(comm_world.rank, 'using ' + str(comm.size) + ' MPI ranks on ' + str(params.num_structures_to_use) + ' structures.')
+        
+    data_files, data_files_idx = put_struct_dir_pct_in_arr(params.test_struct_dir_pct_lst, params.train_struct_dir_pct_lst, params.structure_dirs, params.num_structures_to_use, data_files_matrix=None)
+
     start_time = time.time()
 
     for params_iter in iterable:
@@ -889,32 +822,27 @@ def soap_workflow(params):
         
         param_path = os.path.join(soap_runs_dir, param_string)
         root_print(comm_world.rank, 'param_path', param_path)
-        parallel_mkdir(comm.rank, param_path, time_frame=0.001)
+        mpi_utils.parallel_mkdir(comm.rank, param_path, time_frame=0.001)
 
         rank_output_dir = os.path.join(param_path, 'output_log')
         rank_output_path = os.path.join(rank_output_dir, 'output_from_rank_' + str(comm.rank) + '.out')
-        parallel_mkdir(comm.rank, rank_output_dir, time_frame=0.001)
+        mpi_utils.parallel_mkdir(comm.rank, rank_output_dir, time_frame=0.001)
 
         kernel_calculation_path = os.path.abspath(os.path.join(param_path, 'calculate_kernel'))
         params.kernel_calculation_path = kernel_calculation_path
-        parallel_mkdir(comm.rank, kernel_calculation_path, time_frame=0.001)
+        mpi_utils.parallel_mkdir(comm.rank, kernel_calculation_path, time_frame=0.001)
 
         en_all_dat_fname = inst.get('krr', 'props')
-        structure_dir = inst.get('master', 'structure_dir')
-        num_structures_to_use = inst.get_with_default('master', 'num_structures_to_use', 'all')
+        
         single_molecule_energy = eval(inst.get('master', 'single_molecule_energy'))
 
-        data_files = file_utils.glob(os.path.join(params.structure_dir, '*.json'))
-        if params.num_structures_to_use != 'all':
-            data_files = data_files[: int(params.num_structures_to_use)]
-
         if comm.rank == 0:
-            write_en_dat(kernel_calculation_path, structure_dir, en_all_dat_fname, single_molecule_energy, num_structures_to_use)
+            write_en_dat(kernel_calculation_path, data_files, en_all_dat_fname, single_molecule_energy)
         en_all_dat_fpath = os.path.join(kernel_calculation_path, en_all_dat_fname)
         
         # Calculate global environments if not already calculated
         global_envs_dir = os.path.join(kernel_calculation_path, 'tmpstructures')
-        parallel_mkdir(comm.rank, global_envs_dir, time_frame=0.001)
+        mpi_utils.parallel_mkdir(comm.rank, global_envs_dir, time_frame=0.001)
 
         start_time_envs = time.time()
         num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
@@ -981,6 +909,8 @@ def soap_workflow(params):
             root_print(comm.rank, 'b4 incomplete_tasks.size', incomplete_tasks.size)
 
             incomplete_tasks, num_atoms_arr = get_traversal_order(incomplete_tasks, kernel_calculation_path, rank_output_path)
+            if comm.rank == 0:
+                full_task_list = deepcopy(incomplete_tasks)
 
             incomplete_tasks = mpi_utils.split_up_list_evenly(incomplete_tasks, comm.rank, comm.size)
 
@@ -994,21 +924,29 @@ def soap_workflow(params):
             just_kernel_start_time = time.time()
             my_kernel_data = []
             for task_idx in range(len(incomplete_tasks)):
-                #rank_print(rank_output_path, 'computing task_idx for kernel', task_idx)
+                rank_print(rank_output_path, 'computing task_idx for kernel', task_idx)
                 num_atoms_in_i, num_atoms_in_j = load_soaps(task_idx, loaded_soaps, incomplete_tasks, num_atoms_arr, global_envs_dir, params.lowmem, params.lowestmem, breathing_room_factor, rank_output_path)
+                rank_print(rank_output_path, 'loaded soaps')
                 i,j = incomplete_tasks[task_idx]
                 sij = np.dot(loaded_soaps[str(i) + '_repeat_' + str(num_atoms_in_j)], loaded_soaps[str(j) + '_tile_' + str(num_atoms_in_i)]) ** zeta
-                my_kernel_data.append([i, j, sij])
+                rank_print(rank_output_path, 'repeated array')
+                my_kernel_data.append(sij)
             rank_print(rank_output_path, 'time to compute kernel entries for {} entries: {}'.format(len(incomplete_tasks), time.time() - just_kernel_start_time))
             write_kernel_start_time = time.time()
             kernel_data = comm.gather(my_kernel_data, root=0)
             if comm.rank == 0:
+                kernel_data = np.array(list_utils.flatten_list(kernel_data))
                 rank_print(rank_output_path,'time to gather kernel_data', time.time() - write_kernel_start_time)
+                rank_print(rank_output_path,'kernel_data', kernel_data)
                 kernel_data = np.vstack(kernel_data)
-                write_similarities_to_file(np.int64(kernel_data[:,:2]), kernel_data[:,2], kernel_memmap_path, num_structures=num_structures, rank_output_path=None)
+                rank_print(rank_output_path,'vstacked kernel_data')
+                write_similarities_to_file(full_task_list, kernel_data, kernel_memmap_path, num_structures=num_structures, rank_output_path=rank_output_path)
+                rank_print(rank_output_path,'wrote kernel_data')
                 del kernel_data
+                del full_task_list
             del my_kernel_data
             del incomplete_tasks
+            rank_print(rank_output_path,'ending kernel calculation step.')
             start_time_krr = time.time()
             if comm.rank == 0:
                 rank_print(rank_output_path,'time to calculate kernel', start_time_krr - start_time_kernel)
@@ -1035,7 +973,7 @@ def soap_workflow(params):
         
         krr_task_list = mpi_utils.split_up_list_evenly(krr_task_list, comm.rank, comm.size)
         
-        params.setup_krr_params()
+        
         outfile_path = inst.get(sname, 'outfile')
         props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
         props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
@@ -1124,6 +1062,7 @@ def soap_workflow(params):
 
 if __name__ == '__main__':
     params = SetUpParams()
+    params.setup_krr_params()
     #print(params.soap_param_list)
     soap_workflow(params)
     #print(params.krr_param_list)
