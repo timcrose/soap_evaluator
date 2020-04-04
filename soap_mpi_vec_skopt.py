@@ -164,6 +164,7 @@ class SetUpParams():
             return
         self.test_struct_dir_pct_lst = self.inst.get_list(sname, 'test_struct_dir_pct_lst')
         self.train_struct_dir_pct_lst = self.inst.get_list(sname, 'train_struct_dir_pct_lst')
+        self.selection_methods = list(set(eval(inst.get('krr', 'mode'))))
         self.krr_param_list = ['time', 'python']
         self.krr_param_list += [self.inst.get(sname, 'krr_path')]
         self.krr_standalone_options = {}
@@ -311,7 +312,7 @@ def get_krr_task_list(param_path):
     ntrain_paths = set(file_utils.find(param_path, 'ntrain_*', recursive=True))
     # As a quick approximation, assume that if the output file "saved" exists, then this ntrain_path is done. TODO look
     # inside the files to see for sure if all of the ntests were completed to be more sure if this ntrain_path is done or not.
-    saved_paths = set(file_utils.find(param_path, 'saved', recursive=True))
+    saved_paths = set([os.path.dirname(p) for p in file_utils.find(param_path, 'saved', recursive=True)])
     krr_task_list = sorted(list(ntrain_paths - saved_paths))
     return krr_task_list
 
@@ -332,7 +333,7 @@ def create_krr_dirs(inst, param_path):
     '''
     ntest = eval(inst.get('krr', 'ntest'))
     ntrain = eval(inst.get('krr', 'ntrain'))
-    selection_methods = eval(inst.get('krr', 'mode'))
+    selection_methods = list(set(eval(inst.get('krr', 'mode'))))
     for selection_method in selection_methods:
         for ntest_num_structures in ntest:
             for ntrain_num_structures in ntrain:
@@ -672,6 +673,88 @@ def write_en_dat(wdir_path, data_files, out_fname, single_molecule_energy, energ
     np.save(num_atoms_arr_outfpath, np.array(num_atoms_lst, dtype='float32'))
 
 
+def get_params_in_progress(soap_runs_dir, param_symbols=['n', 'l', 'c', 'g', 'zeta']):
+    '''
+    soap_runs_dir: str
+        Path of the soap_runs directory which contains parameter directories e.g.
+        n8-l8-c4.0-g0.7-zeta1.0
+
+    param_symbols: list of str
+        List of designations for each parameter found in the directory names. A list
+        of lists each of length len(param_symbols) will be returned. 
+
+    Return: params_lst
+    params_lst: list of list of number
+        list of parameter sets that are currently in soap_runs_dir
+
+    Purpose: When only wanting to restart the parameter sets in soap_runs_dir,
+        retrieve which parameter sets those are by looking in soap_runs_dir
+        and parsing the directory names for the parameter sets.
+    '''
+    param_dirs = file_utils.find(soap_runs_dir, '*zeta*', recursive=False)
+    params_lst = []
+    for param_dir in param_dirs:
+        split_param_dir = os.path.basename(param_dir).split('-')
+        param_set = []
+        for param_symbol in param_symbols:
+            for i in range(len(split_param_dir)):
+                if param_symbol in split_param_dir[i]:
+                    param_value = split_param_dir[i].split(param_symbol)[-1]
+                    if param_symbol in ['n', 'l']:
+                        param_value = int(param_value)
+                    else:
+                        param_value = float(param_value)
+                    param_set.append(param_value)
+                    break
+        params_lst.append(param_set)
+    return params_lst
+
+
+def param_set_complete(param_path, selection_methods, kernel_calculation_path, params_set):
+    '''
+    param_path: str
+        Path to parameter set under soap_runs dir. e.g. 
+        soap_runs/n8-l8-c4.0-g0.7-zeta1.0
+    
+    selection_methods: list of str
+        List of selection (sampling) methods that you will use to select the
+        training set. e.g. iss, fibs, random, fps, cur
+
+    kernel_calculation_path: str
+        Path of dir that the kernel will be in once calculated.
+
+    params_set: list of numbers
+        List of parameters used. n, l, c, g, zeta = params_set
+
+    Return: bool
+        True: kernel is calculated and krr is done for all selection methods
+        False: o/w
+
+    Purpose: When restarting, determine if a particular parameter set has already
+        been calculated - both the kernel and krr for all desired selection 
+        methods.
+    '''
+    if not os.path.exists(os.path.join(kernel_calculation_path, 'completed_kernel')):
+        return False
+
+    # Don't bother with runs that had bad results with other krr selection methods
+    fp = np.memmap('krr_results.dat', dtype='float32', mode='r')
+    fp_len = len(fp)
+    fp.resize((int(fp_len / 6), 6))
+    for row in fp:
+        if np.allclose(row[:-1], params_set) and row[-1] < 0.5:
+            return True
+    
+    selection_methods = selection_methods
+    complete_selection_methods = [path.split('/')[1] for path in file_utils.find(param_path, 'saved')]
+
+    for selection_method in selection_methods:
+        if selection_method not in complete_selection_methods:
+            return False
+
+    return True
+
+
 def soap_workflow(params):
     '''
     params: SetUpParams object
@@ -685,6 +768,7 @@ def soap_workflow(params):
         energies of the test set.
     '''
     inst = params.inst
+    restart_only = eval(inst.get_with_default('master', 'restart_only', False))
     c_precision = eval(inst.get_with_default('calculate_kernel', 'c_precision', 0.5))
     g_precision = eval(inst.get_with_default('calculate_kernel', 'g_precision', 0.5))
     zeta_precision = eval(inst.get_with_default('calculate_kernel', 'zeta_precision', 0.25))
@@ -698,11 +782,19 @@ def soap_workflow(params):
     krr_results_memmap_fpath = os.path.join(owd,'krr_results.dat')
     soap_runs_dir = os.path.join(owd, 'soap_runs')
     num_param_combos = eval(inst.get('master', 'num_param_combos_per_replica'))
+
+    #root_print(comm_world.rank, 'about to get output fpath')
+    #overall_outfile_fpath = file_utils.get_stdout_fpath()
+    #root_print(comm_world.rank, 'overall_outfile_fpath', overall_outfile_fpath)
+    overall_outfile_fpath = os.path.join(owd, 'output.out')
     
     if num_param_combos is None:
-        params_list = [inst.get_list('calculate_kernel', p) for p in params_to_get]
-        params_combined_iterable = itertools.product(*params_list)
-        iterable = params_combined_iterable
+        if restart_only:
+            iterable = get_params_in_progress(soap_runs_dir)
+        else:
+            params_list = [inst.get_list('calculate_kernel', p) for p in params_to_get]
+            params_combined_iterable = itertools.product(*params_list)
+            iterable = params_combined_iterable
     else:
         iterable = range(num_param_combos)
     if comm_world.rank == 0 and num_param_combos is not None:
@@ -821,82 +913,94 @@ def soap_workflow(params):
                 param_string += '-'
         
         param_path = os.path.join(soap_runs_dir, param_string)
-        root_print(comm_world.rank, 'param_path', param_path)
-        mpi_utils.parallel_mkdir(comm.rank, param_path, time_frame=0.001)
-
-        rank_output_dir = os.path.join(param_path, 'output_log')
-        rank_output_path = os.path.join(rank_output_dir, 'output_from_rank_' + str(comm.rank) + '.out')
-        mpi_utils.parallel_mkdir(comm.rank, rank_output_dir, time_frame=0.001)
-
         kernel_calculation_path = os.path.abspath(os.path.join(param_path, 'calculate_kernel'))
         params.kernel_calculation_path = kernel_calculation_path
+
+        if param_set_complete(param_path, params.selection_methods, params.kernel_calculation_path, params_set):
+            continue
+
+        root_print(comm_world.rank, 'param_path', param_path)
+        
+        rank_output_dir = os.path.join(param_path, 'output_log')
+        rank_output_path = os.path.join(rank_output_dir, 'output_from_rank_' + str(comm.rank) + '.out')
+
+        if comm.rank == 0 and restart_only:
+            #Clear out old log files
+            if os.path.exists(rank_output_dir):
+                root_print(comm.rank, 'rank_output_dir', rank_output_dir, 'exists but we are restarting so remove it.')
+                file_utils.rm(rank_output_dir)
+
+        #mpi_utils.parallel_mkdir(comm.rank, param_path, time_frame=0.001)
+        mpi_utils.parallel_mkdir(comm.rank, rank_output_dir, time_frame=0.001)
         mpi_utils.parallel_mkdir(comm.rank, kernel_calculation_path, time_frame=0.001)
 
         en_all_dat_fname = inst.get('krr', 'props')
         
         single_molecule_energy = eval(inst.get('master', 'single_molecule_energy'))
 
-        if comm.rank == 0:
-            write_en_dat(kernel_calculation_path, data_files, en_all_dat_fname, single_molecule_energy)
-        en_all_dat_fpath = os.path.join(kernel_calculation_path, en_all_dat_fname)
-        
-        # Calculate global environments if not already calculated
-        global_envs_dir = os.path.join(kernel_calculation_path, 'tmpstructures')
-        mpi_utils.parallel_mkdir(comm.rank, global_envs_dir, time_frame=0.001)
-
-        start_time_envs = time.time()
-        num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
-        
-        root_print(comm_world.rank, str(num_structures) + ' structures are in the pool.')
-        # make an array that will store the number of atoms in every structure.
-        # Must have at least 2 ranks so that 1 can be the master rank
-        ##print('num_structures', num_structures, flush=True)
-        ##print('comm.size', comm.size, flush=True)
-        
-        if os.path.exists(global_envs_dir):
-            global_envs_incomplete_tasks = np.array(sorted(list(set(np.arange(num_structures)) - set([int(file_utils.fname_from_fpath(fpath).split('_')[1]) for fpath in file_utils.find(global_envs_dir, '*.dat')]))))
-        else:
-            global_envs_incomplete_tasks = np.arange(num_structures)
-
-        global_envs_incomplete_tasks = mpi_utils.split_up_list_evenly(global_envs_incomplete_tasks, comm.rank, comm.size)
-
-        rank_print(rank_output_path, 'my assigned global environments to calculate:', global_envs_incomplete_tasks)
-
-        alchem = alchemy(mu=params.soap_standalone_options['mu'])
-        os.chdir(kernel_calculation_path)
-        
-        # global_envs_incomplete_tasks is a np.array of tasks where each task is the index in the structure list of a structure that still
-        # needs its global soap descriptor calculated.
-        # Calculate the global soap descriptor for each structure whose index is in global_envs_incomplete_tasks
-        if len(global_envs_incomplete_tasks) > 0:
-            start = global_envs_incomplete_tasks[0]
-            rank_print(rank_output_path, 'Beginning computation of global envs with start =', start)
-            if global_envs_incomplete_tasks[-1] == start:
-                stop = start + 1
-            else:
-                stop = global_envs_incomplete_tasks[-1] + 1
-            rank_print(rank_output_path, 'About to get atoms list')
-            al = get_atoms_list(data_files[start : stop], rank_output_path)
-            rank_print(rank_output_path, 'Got atoms list')
-            sl = structurelist()
-            sl.count = start # Set to the global starting index
-            just_env_start_time = time.time()
-            rank_print(rank_output_path, 'Using parameters', 'c = {}, cotw = {}, n = {}, l = {}, g = {}, cw = {}, zeta = {}, nocenter = {}, exclude = {}, unsoap = {}'.format(c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], zeta, params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], params.soap_standalone_options['unsoap']))
-            for at in al:
-                si = structure(alchem)
-                si.parse(at, c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], unsoap=params.soap_standalone_options['unsoap'], kit=params.soap_standalone_options['kit'])
-                sl.append(si.atomic_envs_matrix)
-            rank_print(rank_output_path, 'time to compute envs for {} structures: {}'.format(stop - start, time.time() - just_env_start_time))
-        start_time_kernel = time.time()
-        rank_print(rank_output_path,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
-        root_print(comm_world.rank,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
-        
-        # Calculate kernel if not already calculated
+        kernel_complete = os.path.exists(os.path.join(kernel_calculation_path, 'completed_kernel'))
         kernel_memmap_path = os.path.join(kernel_calculation_path, 'kernel.dat')
-        # Not supporting restarts of kernel b/c it is so much slower to write one similarity at a time and also requires a comm.barrier.
-        # However, we should check if the kernel has been completed which we'll know if the root rank made a file called completed_kernel
-        completed_kernel = os.path.exists(os.path.join(kernel_calculation_path, 'completed_kernel'))
-        if not completed_kernel:
+        global_envs_dir = os.path.join(kernel_calculation_path, 'tmpstructures')
+        en_all_dat_fpath = os.path.join(kernel_calculation_path, en_all_dat_fname)
+        if not kernel_complete:
+            if comm.rank == 0:
+                write_en_dat(kernel_calculation_path, data_files, en_all_dat_fname, single_molecule_energy)
+            
+            # Calculate global environments if not already calculated
+            
+            mpi_utils.parallel_mkdir(comm.rank, global_envs_dir, time_frame=0.001)
+
+            start_time_envs = time.time()
+            num_structures = len(file_utils.get_lines_of_file(en_all_dat_fpath))
+            
+            root_print(comm_world.rank, str(num_structures) + ' structures are in the pool.')
+            # make an array that will store the number of atoms in every structure.
+            # Must have at least 2 ranks so that 1 can be the master rank
+            ##print('num_structures', num_structures, flush=True)
+            ##print('comm.size', comm.size, flush=True)
+            
+            if os.path.exists(global_envs_dir):
+                global_envs_incomplete_tasks = np.array(sorted(list(set(np.arange(num_structures)) - set([int(file_utils.fname_from_fpath(fpath).split('_')[1]) for fpath in file_utils.find(global_envs_dir, '*.dat')]))))
+            else:
+                global_envs_incomplete_tasks = np.arange(num_structures)
+
+            global_envs_incomplete_tasks = mpi_utils.split_up_list_evenly(global_envs_incomplete_tasks, comm.rank, comm.size)
+
+            rank_print(rank_output_path, 'my assigned global environments to calculate:', global_envs_incomplete_tasks)
+
+            alchem = alchemy(mu=params.soap_standalone_options['mu'])
+            os.chdir(kernel_calculation_path)
+            
+            # global_envs_incomplete_tasks is a np.array of tasks where each task is the index in the structure list of a structure that still
+            # needs its global soap descriptor calculated.
+            # Calculate the global soap descriptor for each structure whose index is in global_envs_incomplete_tasks
+            if len(global_envs_incomplete_tasks) > 0:
+                start = global_envs_incomplete_tasks[0]
+                rank_print(rank_output_path, 'Beginning computation of global envs with start =', start)
+                if global_envs_incomplete_tasks[-1] == start:
+                    stop = start + 1
+                else:
+                    stop = global_envs_incomplete_tasks[-1] + 1
+                rank_print(rank_output_path, 'About to get atoms list')
+                al = get_atoms_list(data_files[start : stop], rank_output_path)
+                rank_print(rank_output_path, 'Got atoms list')
+                sl = structurelist()
+                sl.count = start # Set to the global starting index
+                just_env_start_time = time.time()
+                rank_print(rank_output_path, 'Using parameters', 'c = {}, cotw = {}, n = {}, l = {}, g = {}, cw = {}, zeta = {}, nocenter = {}, exclude = {}, unsoap = {}'.format(c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], zeta, params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], params.soap_standalone_options['unsoap']))
+                for at in al:
+                    si = structure(alchem)
+                    si.parse(at, c, params.soap_standalone_options['cotw'], n, l, g, params.soap_standalone_options['cw'], params.soap_standalone_options['nocenter'], params.soap_standalone_options['exclude'], unsoap=params.soap_standalone_options['unsoap'], kit=params.soap_standalone_options['kit'])
+                    sl.append(si.atomic_envs_matrix)
+                rank_print(rank_output_path, 'time to compute envs for {} structures: {}'.format(stop - start, time.time() - just_env_start_time))
+            start_time_kernel = time.time()
+            rank_print(rank_output_path,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
+            root_print(comm_world.rank,'time to read input structures and calculate environments', start_time_kernel - start_time_envs)
+            
+            # Calculate kernel if not already calculated
+            
+            # Not supporting restarts of kernel b/c it is so much slower to write one similarity at a time and also requires a comm.barrier.
+            # However, we should check if the kernel has been completed which we'll know if the root rank made a file called completed_kernel
             incomplete_tasks_rows, incomplete_tasks_cols = np.triu_indices(num_structures)
             root_print(comm.rank, 'incomplete_tasks_rows.shape', incomplete_tasks_rows.shape, 'incomplete_tasks_cols', incomplete_tasks_cols)
             incomplete_tasks = np.array(list(zip(incomplete_tasks_rows, incomplete_tasks_cols)))
@@ -947,13 +1051,13 @@ def soap_workflow(params):
             del my_kernel_data
             del incomplete_tasks
             rank_print(rank_output_path,'ending kernel calculation step.')
-            start_time_krr = time.time()
+            end_time_kernel = time.time()
             if comm.rank == 0:
-                rank_print(rank_output_path,'time to calculate kernel', start_time_krr - start_time_kernel)
-                root_print(comm_world.rank,'time to calculate kernel', start_time_krr - start_time_kernel)
-                rank_print(rank_output_path,'time to gather and write kernel', start_time_krr - write_kernel_start_time)
+                rank_print(rank_output_path,'time to calculate kernel', end_time_kernel - start_time_kernel)
+                root_print(comm_world.rank,'time to calculate kernel', end_time_kernel - start_time_kernel)
+                rank_print(rank_output_path,'time to gather and write kernel', end_time_kernel - write_kernel_start_time)
                 file_utils.write_to_file(os.path.join(kernel_calculation_path, 'completed_kernel'), 'completed_kernel', mode='w')
-            
+        start_time_krr = time.time()
         # krr. Currently haven't implemented krr_test into the mpi version.
         if 'krr' not in params.process_list:
             if num_param_combos is None:
@@ -969,93 +1073,98 @@ def soap_workflow(params):
         comm.barrier()
         rank_print(rank_output_path, 'entering krr')
 
-        krr_task_list = get_krr_task_list(param_path)
-        
-        krr_task_list = mpi_utils.split_up_list_evenly(krr_task_list, comm.rank, comm.size)
-        
-        
-        outfile_path = inst.get(sname, 'outfile')
-        props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
-        props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
-        sys_stdout_original = sys.stdout
-        # krr_task_list is np.array with shape (,number of tasks) where each element is an ntrain path.
-        rank_print(rank_output_path, 'krr_task_list recieved in krr', krr_task_list)
-        just_krr_start_time = time.time()
-        my_krr_results = []
-        for ntrain_path in krr_task_list:
-            rank_print(rank_output_path, 'doing krr for ntrain_path', ntrain_path)
-            one_krr_start_time = time.time()
-            os.chdir(ntrain_path)
-            ntrain, ntest, selection_method = get_specific_krr_params(ntrain_path)
-            # do krr
-            sys.stdout = open(outfile_path, 'w')
-            avg_test_R2 = krr.main(kernels=[kernel_memmap_path], props=[props_path], kweights=params.krr_standalone_options['kweights'], mode=selection_method, ntrain=ntrain,
-                            ntest=ntest, ntrue=params.krr_standalone_options['ntrue'], csi=params.krr_standalone_options['csi'],
-                            sigma=params.krr_standalone_options['sigma'], ntests=params.krr_standalone_options['ntests'], 
-                            savevector=params.krr_standalone_options['saveweights'], refindex=params.krr_standalone_options['refindex'],
-                            inweights=params.krr_standalone_options['pweights'])
-            rank_print(rank_output_path, 'Completed krr for above ntrain_path')
-            my_krr_results.append(params_set + [avg_test_R2])
-            rank_print(rank_output_path, 'time to compute one krr with selection method {} is: {}'.format(selection_method, time.time() - one_krr_start_time))
-        end_time_krr = time.time()
-        sys.stdout.close()
-        sys.stdout = sys_stdout_original
-        rank_print(rank_output_path,'time for krr', end_time_krr - start_time_krr)
-        rank_print(rank_output_path,'time for param', end_time_krr - start_time_param)
-        root_print(comm_world.rank,'time for krr', end_time_krr - start_time_krr)
-        root_print(comm_world.rank,'time for param', end_time_krr - start_time_param)
-        rank_print(rank_output_path, 'time to compute krr {} times: {}'.format(len(krr_task_list), end_time_krr - just_krr_start_time))
-        rank_print(rank_output_path, 'my_krr_results', my_krr_results)
-        # Get test set weighted R^2. This is the R^2 gotten by each sampling method averaged over ntests and then weighted by
-        # the fraction of the max of these R^2 values among all sampling methods tried. This will be the objective function
-        # value given to skopt.Optimizer to optimize hyperparameters. The average R^2 gotten by each sampling method will only
-        # be recorded for the last ntest/ntrain combo so it's suggested to just have one ntrain and one ntest value when doing
-        # hyperparameter optimization.
-        krr_results = comm.gather(my_krr_results, root=0)
-        if comm.rank == 0:
-            krr_results_matrix = np.array(list_utils.flatten_list(krr_results))
-            weighted_avg_test_R2 = get_weighted_avg_test_R2(krr_results_matrix[:,-1])
-            krr_results_list = list(krr_results_matrix[0][:-1]) + [weighted_avg_test_R2]
-            rank_print(rank_output_path, 'krr_results_list', krr_results_list)
+        overall_krr_task_list = get_krr_task_list(param_path)
 
-        if comm_world.rank == 0:
-            krr_results_matrices = [krr_results_list]
-            for root in other_root_ranks:
-                krr_results_matrices.append(comm_world.recv(source=root, tag=2))
-            overall_krr_results_matrix = np.vstack(krr_results_matrices)
-            root_print(comm_world.rank, 'overall_krr_results_matrix', overall_krr_results_matrix)
-            # append this matrix to the memmap which has all such matrices saved (optional)
-            if os.path.exists(krr_results_memmap_fpath):
-                mode = 'r+'
-            else:
-                mode = 'w+'
-            krr_results_memmap = np.memmap(krr_results_memmap_fpath, dtype='float32', mode=mode, offset=krr_results_memmap_offset, shape=overall_krr_results_matrix.shape)
-            krr_results_memmap[:] = overall_krr_results_matrix
-            del krr_results_memmap
-            krr_results_memmap_offset += overall_krr_results_matrix.size * float32_size
-            root_print(comm_world.rank, 'overall_krr_results_matrix', overall_krr_results_matrix)
-            if num_param_combos is not None:
-                # Divide by precision because we're getting 1/prec from the ask and we want prec increments out of integer types in the optimizer
-                overall_krr_results_matrix[:,2] = np.int64(overall_krr_results_matrix[:,2] / c_precision)
-                overall_krr_results_matrix[:,3] = np.int64(overall_krr_results_matrix[:,3] / g_precision)
-                overall_krr_results_matrix[:,4] = np.int64(overall_krr_results_matrix[:,4] / zeta_precision)
-                #root_print(comm_world.rank, 'overall_krr_results_matrix after prec', overall_krr_results_matrix)
-                #root_print(comm_world.rank, 'list(map(list, np.int64(np.around(overall_krr_results_matrix[:,:-1]))))', np.int64(np.around(list(map(list, overall_krr_results_matrix[:,:-1])))))
-                # Used np.int64 since we're using all integers in the param space.
+        if len(overall_krr_task_list) > 0:
+        
+            krr_task_list = mpi_utils.split_up_list_evenly(overall_krr_task_list, comm.rank, comm.size)
 
-                krr_results_values = overall_krr_results_matrix[:,-1]
-                krr_results_parameters = overall_krr_results_matrix[:,:-1]
-                # Can't tell opt parameters that aren't in the space (which are ones that don't vary so we couldn't include them)
-                krr_results_parameters_to_tell_opt = list_utils.multi_delete(krr_results_parameters, single_val_int_var_idx, axis=1)
+            outfile_path = inst.get(sname, 'outfile')
+            props_fname = params.krr_param_list[params.krr_param_list.index('--props') + 1]
+            props_path = os.path.join(kernel_calculation_path, os.path.basename(os.path.abspath(props_fname)))
+            
+            # krr_task_list is np.array with shape (,number of tasks) where each element is an ntrain path.
+            rank_print(rank_output_path, 'krr_task_list recieved in krr', krr_task_list)
+            just_krr_start_time = time.time()
+            my_krr_results = []
+            krr_results_list = []
+            for ntrain_path in krr_task_list:
+                rank_print(rank_output_path, 'doing krr for ntrain_path', ntrain_path)
+                one_krr_start_time = time.time()
+                os.chdir(ntrain_path)
+                ntrain, ntest, selection_method = get_specific_krr_params(ntrain_path)
+                # do krr
+                sys.stdout = open(outfile_path, 'w')
+                avg_test_R2 = krr.main(kernels=[kernel_memmap_path], props=[props_path], kweights=params.krr_standalone_options['kweights'], mode=selection_method, ntrain=ntrain,
+                                ntest=ntest, ntrue=params.krr_standalone_options['ntrue'], csi=params.krr_standalone_options['csi'],
+                                sigma=params.krr_standalone_options['sigma'], ntests=params.krr_standalone_options['ntests'], 
+                                savevector=params.krr_standalone_options['saveweights'], refindex=params.krr_standalone_options['refindex'],
+                                inweights=params.krr_standalone_options['pweights'])
+                rank_print(rank_output_path, 'Completed krr for above ntrain_path')
+                my_krr_results.append(params_set + [avg_test_R2])
+                rank_print(rank_output_path, 'time to compute one krr with selection method {} is: {}'.format(selection_method, time.time() - one_krr_start_time))
+            end_time_krr = time.time()
+            sys.stdout = open(overall_outfile_fpath, 'a')
+            rank_print(rank_output_path,'time for krr', end_time_krr - start_time_krr)
+            rank_print(rank_output_path,'time for param', end_time_krr - start_time_param)
+            root_print(comm_world.rank,'time for krr', end_time_krr - start_time_krr)
+            root_print(comm_world.rank,'time for param', end_time_krr - start_time_param)
+            rank_print(rank_output_path, 'time to compute krr {} times: {}'.format(len(krr_task_list), end_time_krr - just_krr_start_time))
+            rank_print(rank_output_path, 'my_krr_results', my_krr_results)
+        
+            # Get test set weighted R^2. This is the R^2 gotten by each sampling method averaged over ntests and then weighted by
+            # the fraction of the max of these R^2 values among all sampling methods tried. This will be the objective function
+            # value given to skopt.Optimizer to optimize hyperparameters. The average R^2 gotten by each sampling method will only
+            # be recorded for the last ntest/ntrain combo so it's suggested to just have one ntrain and one ntest value when doing
+            # hyperparameter optimization.
+            krr_results = comm.gather(my_krr_results, root=0)
+            if comm.rank == 0:
+                krr_results_matrix = np.array(list_utils.flatten_list(krr_results))
+                weighted_avg_test_R2 = get_weighted_avg_test_R2(krr_results_matrix[:,-1])
+                krr_results_list = list(krr_results_matrix[0][:-1]) + [weighted_avg_test_R2]
+                rank_print(rank_output_path, 'krr_results_list', krr_results_list)
 
-                opt = tell_opt(opt, list(map(list, krr_results_parameters_to_tell_opt)), list(krr_results_values))
+            if comm_world.rank == 0:
+                krr_results_matrices = [krr_results_list]
+                for root in other_root_ranks:
+                    krr_results_matrices.append(comm_world.recv(source=root, tag=2))
+                overall_krr_results_matrix = np.vstack(krr_results_matrices)
+                root_print(comm_world.rank, 'overall_krr_results_matrix', overall_krr_results_matrix)
+                # append this matrix to the memmap which has all such matrices saved (optional)
+                if os.path.exists(krr_results_memmap_fpath):
+                    mode = 'r+'
+                else:
+                    mode = 'w+'
+                krr_results_memmap = np.memmap(krr_results_memmap_fpath, dtype='float32', mode=mode, offset=krr_results_memmap_offset, shape=overall_krr_results_matrix.shape)
+                krr_results_memmap[:] = overall_krr_results_matrix
+                del krr_results_memmap
+                krr_results_memmap_offset += overall_krr_results_matrix.size * float32_size
+                root_print(comm_world.rank, 'overall_krr_results_matrix', overall_krr_results_matrix)
+                if num_param_combos is not None:
+                    # Divide by precision because we're getting 1/prec from the ask and we want prec increments out of integer types in the optimizer
+                    overall_krr_results_matrix[:,2] = np.int64(overall_krr_results_matrix[:,2] / c_precision)
+                    overall_krr_results_matrix[:,3] = np.int64(overall_krr_results_matrix[:,3] / g_precision)
+                    overall_krr_results_matrix[:,4] = np.int64(overall_krr_results_matrix[:,4] / zeta_precision)
+                    #root_print(comm_world.rank, 'overall_krr_results_matrix after prec', overall_krr_results_matrix)
+                    #root_print(comm_world.rank, 'list(map(list, np.int64(np.around(overall_krr_results_matrix[:,:-1]))))', np.int64(np.around(list(map(list, overall_krr_results_matrix[:,:-1])))))
+                    # Used np.int64 since we're using all integers in the param space.
+
+                    krr_results_values = overall_krr_results_matrix[:,-1]
+                    krr_results_parameters = overall_krr_results_matrix[:,:-1]
+                    # Can't tell opt parameters that aren't in the space (which are ones that don't vary so we couldn't include them)
+                    krr_results_parameters_to_tell_opt = list_utils.multi_delete(krr_results_parameters, single_val_int_var_idx, axis=1)
+
+                    opt = tell_opt(opt, list(map(list, krr_results_parameters_to_tell_opt)), list(krr_results_values))
                 
-        elif comm.rank == 0:
+        elif comm.rank == 0 and len(other_root_ranks) > 0:
             comm_world.send(krr_results_list, dest=0, tag=2)
 
 
     end_time = time.time()
-    rank_print(rank_output_path,'total time', end_time - start_time)
+    try:
+        rank_print(rank_output_path,'total time', end_time - start_time)
+    except:
+        pass
     root_print(comm_world.rank,'total time', end_time - start_time)
                         
 
