@@ -1,11 +1,12 @@
 #!/bin/bash -l
-#SBATCH -q regular
-#SBATCH -A m1980
+#SBATCH -q debug
+#SBATCH -A m3578
 #SBATCH -C knl,quad,cache
-#SBATCH -N 1
-#SBATCH -t 01:00:00
+#SBATCH -N 2
+#SBATCH -n 136
+#SBATCH -t 00:30:00
 #SBATCH -J soap
 #SBATCH -o my_job.o%j
 
 echo `which python`
-srun -n 68 --cpu_bind=cores python -u ${soap_dir}/soap_mpi_vec_skopt.py soap.conf > output.out
+srun -n 136 --cpu_bind=cores python -u ${soap_dir}/soap_mpi_vec_skopt.py soap.conf > output.out

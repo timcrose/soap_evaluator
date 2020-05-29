@@ -49,6 +49,28 @@ def get_num_cores(soap_owd):
     return int(found_line.split()[1])
 
 
+def get_num_structs(soap_owd):
+    '''
+    soap_owd: str
+        Original working dir (submission dir with soap.conf) of a soap run.
+    
+    Return: int
+        number of structures used for the given soap owd in the kernel.
+    
+    Purpose: Parse output.out in soap_owd for number of structures used in the kernel.
+    '''
+    output_fpath = file_utils.os.path.join(soap_owd, 'output.out')
+    print('Parsing', output_fpath, 'for number of structures in the kernel', flush=True)
+    found_lines = file_utils.grep(' MPI ranks on ', output_fpath, read_mode='r', fail_if_DNE=True)
+    if len(found_lines) > 0:
+        found_line = found_lines[0]
+    else:
+        return -55555.0
+    #print(int(found_line.split()[1]))
+    # format: ('using 2 MPI ranks on 1200 structures.',)
+    return int(found_line.split()[5])
+
+
 def get_param_values(param_path):
     param_basename = file_utils.os.path.basename(param_path)
     #format n8-l8-c10.0-g0.7-zeta1.0
@@ -78,14 +100,15 @@ def get_avg_time(param_path, data_key):
         get the average for all MPI ranks in a particular param_path.
     '''
     search_str_dct = {'total_time' : 'total time', 'kernel_time' : 'time to calculate kernel',
-                        'env_time' : 'calculate environments', 'param_time': 'time for param'}
+                        'env_time' : 'calculate environments', 'param_time': 'time for param',
+                        'gather_time' : 'time to gather kernel_data'}
     outfiles = file_utils.find(param_path, 'output_from_rank*')
     #print('outfiles', outfiles, flush=True)
     found_lines = file_utils.grep(search_str_dct[data_key], outfiles, verbose=True)
     #print('found_lines', found_lines, flush=True)
     time_lst = []
     for found_line in found_lines:
-        if data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time':
+        if data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time' or data_key == 'gather_time':
             # format: ('total time', 156.7616991996765)
             # format: ('time to calculate kernel', 124.95694470405579)
             # format: ('time to read input structures and calculate environments', 11.158977270126343)
@@ -102,7 +125,7 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
     data_to_get: list of str
         List of data to get. The order specified is the order in which
         they will appear in columns of a csv file later. Valid options
-        so far are: 'num_structures_to_use', 'total_time'
+        so far are: 'num_structs', 'total_time'
 
     soap_owds: list of str
         List of original working dir (submission dir with soap.conf) for each
@@ -131,11 +154,11 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
         for i, param_path in enumerate(param_paths):
             n, l, c, g, zeta = get_param_values(param_path)
             for j, data_key in enumerate(data_to_get):
-                if data_key == 'num_structures_to_use':
-                    data_bit[i,j] = math_utils.round(get_num_structs_to_use(soap_owd), num_decimal_places)
+                if data_key == 'num_structs':
+                    data_bit[i,j] = math_utils.round(get_num_structs(soap_owd), num_decimal_places)
                 elif data_key == 'num_cores':
                     data_bit[i,j] = math_utils.round(get_num_cores(soap_owd), num_decimal_places)
-                elif data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time':
+                elif data_key == 'total_time' or data_key == 'kernel_time' or data_key == 'env_time' or data_key == 'param_time' or data_key == 'gather_time':
                     data_bit[i, j] = math_utils.round(get_avg_time(param_path, data_key), num_decimal_places)
                 elif data_key == 'n':
                     data_bit[i,j] = n
@@ -158,38 +181,69 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
     return list(map(list, data_matrix))
 
 
-def plot_data(data_matrix, data_to_get):
-    y_var = 'kernel_time'
-    x_var = 'num_cores'
-    append_to_title = '_target1_2mpc_at_n-8,l-8,c4.0,g-0.7'
+def plot_data(data_matrix, data_to_get, log_log_scale=True):
+    y_vars = ['kernel_time', 'env_time']
+    x_vars = ['n']
+    append_to_title = '_target1_2mpc_at_n-8,c4.0,g-0.5'
 
     col_dct = {d:data_to_get.index(d) for d in data_to_get}
     data_matrix = np.array(data_matrix)
-    axis_label_dct = {'n':'number of radial basis functions',
-                      'l':'number of angular basis functions',
+    axis_label_dct = {'n':'number of radial basis funcs',
+                      'l':'number of angular basis funcs',
                       'c':'cutoff radius',
-                      'R^2':'Test set R^2',
+                      'R^2':'Test set squared Pearson correlation of SOAP with DFT',
                       'param_time': 'Total time taken for the workflow of this parameter set (s)',
                       'num_cores': 'Number of MPI ranks',
-                      'kernel_time': 'Time to construct the kernel'}
-    plot_title = y_var + '_vs_' + x_var + append_to_title
-    y_axis_label = axis_label_dct[y_var]
-    x_axis_label = axis_label_dct[x_var]
+                      'kernel_time': 'Time to create SOAP kernel (s)',
+                      'env_time' : 'Time to create SOAP envs (s)',
+                      'gather_time': 'Time to gather (s)',
+                      'num_structs': 'Number of structures in kernel'}
+    for y_var in y_vars:
+        for x_var in x_vars:
+            plot_title = y_var + '_vs_' + x_var + append_to_title
+            y_axis_label = axis_label_dct[y_var]
+            x_axis_label = axis_label_dct[x_var]
 
-    f = plt.figure()
-    plt.title(plot_title)
-    plt.ylabel(y_axis_label)
-    plt.xlabel(x_axis_label)
-    plt.plot(data_matrix[:,col_dct[x_var]], data_matrix[:,col_dct[y_var]], '-o')
-    f.savefig(plot_title + '.png', bbox_inches='tight')
-
+            f = plt.figure()
+            ax = f.add_subplot(2,1,1)
+            for tick in ax.xaxis.get_major_ticks():
+                tick.label.set_fontsize(22)
+            for tick in ax.yaxis.get_major_ticks():
+                tick.label.set_fontsize(22)
+            if log_log_scale:
+                x_data = data_matrix[:,col_dct[x_var]]
+                y_data = data_matrix[:,col_dct[y_var]]
+                if y_var == 'kernel_time':
+                    modifier = []
+                    # min gather time for a given kernel size and number of nodes
+                    # (large variations due to random computational noise
+                    # should not be included in the benchmark)
+                    min_gotten_gather_time = 4.5
+                    for val in data_matrix[:,col_dct['gather_time']]:
+                        if val > min_gotten_gather_time:
+                            diff = val - min_gotten_gather_time
+                        else:
+                            diff = 0
+                        modifier.append(diff)
+                    modifier = np.array(modifier)
+                    y_data = y_data - modifier
+                ax.loglog(x_data, y_data, basex=2)
+            
+            #plt.title(plot_title)
+            plt.ylabel(y_axis_label, fontsize=20)
+            plt.xlabel(x_axis_label, fontsize=20)
+            
+            #ax.plot(np.log2(data_matrix[:,col_dct[x_var]]), np.log2(data_matrix[:,col_dct[y_var]]), '-o')
+            plt.savefig(plot_title + '.png', bbox_inches='tight')
+            plt.cla()
+            plt.close(f)
 
 def main():
     outfile_fpath = 'benchmark_data.csv'
-    data_to_get = ['param_time', 'num_cores', 'kernel_time', 'env_time', 'n', 'l', 'c', 'g', 'zeta']
-    sort_by = 'num_cores'
+    data_to_get = ['param_time', 'num_cores', 'kernel_time', 'env_time', 'n', 'l', 'c', 'g', 'zeta', 'gather_time', 'num_structs']
+    sort_by = 'n'
     num_decimal_places = 1
-    soap_owds = file_utils.find(file_utils.os.getcwd(), 'num_cores*')
+    soap_owds = file_utils.find(file_utils.os.getcwd(), 'n_*')
     #soap_owds = ['/global/cscratch1/sd/trose/soap_run_calcs/target1/2mpc/hyperparameter_optimization/cutoff']
     print('soap_owds', soap_owds, flush=True)
     data_matrix = get_data(data_to_get, soap_owds, num_decimal_places=num_decimal_places, sort_by=sort_by)
