@@ -2,6 +2,7 @@ from python_utils import file_utils, list_utils, math_utils
 import numpy as np
 from copy import deepcopy
 import matplotlib.pyplot as plt
+from ibslib.io import read
 
 def get_num_structs_to_use(soap_owd):
     '''
@@ -25,6 +26,33 @@ def get_num_structs_to_use(soap_owd):
         return -55555.0
     # format: num_structures_to_use = 100
     return int(found_line.split('=')[1])
+
+def get_num_atoms(soap_owd):
+    '''
+    soap_owd: str
+        Original working dir (submission dir with soap.conf) of a soap run.
+    
+    Return: int
+        num_structures_to_use for the given soap owd.
+    
+    Purpose: Parse soap.conf in soap_owd for num_structures_to_use
+
+    TODO: Make more robust by searching kernel size or other places the number
+        of structures is output in output files.
+    '''
+    soap_conf_fpath = file_utils.os.path.join(soap_owd, 'soap.conf')
+    print('Parsing', soap_conf_fpath, 'for number of atoms per unit cell', flush=True)
+    # Currently assuming only using one structure_dir
+    found_lines = file_utils.grep('structure_dirs', soap_conf_fpath, read_mode='r', fail_if_DNE=True)
+    if len(found_lines) > 0:
+        found_line = found_lines[0]
+    else:
+        return -55555.0
+    # format: num_structures_to_use = 100
+    structure_dir = eval(found_line.split('=')[1])[0]
+    struct_fpath = file_utils.find(structure_dir, '*.json')[0]
+    struct = read(struct_fpath)
+    return struct.properties['number_of_atoms_in_molecule'] * struct.properties['Z']
 
 
 def get_num_cores(soap_owd):
@@ -170,6 +198,8 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
                     data_bit[i,j] = c
                 elif data_key == 'zeta':
                     data_bit[i,j] = zeta
+                elif data_key == 'num_atoms':
+                    data_bit[i,j] = math_utils.round(get_num_atoms(soap_owd), num_decimal_places)
             
         if data_matrix is None:
             data_matrix = deepcopy(data_bit)
@@ -184,7 +214,7 @@ def get_data(data_to_get, soap_owds, num_decimal_places=1, sort_by=None):
 def plot_data(data_matrix, data_to_get, log_log_scale=True):
     y_vars = ['kernel_time', 'env_time']
     x_vars = ['n']
-    append_to_title = '_target1_2mpc_at_n-8,c4.0,g-0.5'
+    append_to_title = '_target1_Z-2,l-8,c4.0,g-0.5,cores-68'
 
     col_dct = {d:data_to_get.index(d) for d in data_to_get}
     data_matrix = np.array(data_matrix)
@@ -197,7 +227,8 @@ def plot_data(data_matrix, data_to_get, log_log_scale=True):
                       'kernel_time': 'Time to create SOAP kernel (s)',
                       'env_time' : 'Time to create SOAP envs (s)',
                       'gather_time': 'Time to gather (s)',
-                      'num_structs': 'Number of structures in kernel'}
+                      'num_structs': 'Number of structures in kernel',
+                      'num_atoms':'Number of atoms in unit cell'}
     for y_var in y_vars:
         for x_var in x_vars:
             plot_title = y_var + '_vs_' + x_var + append_to_title
@@ -240,7 +271,7 @@ def plot_data(data_matrix, data_to_get, log_log_scale=True):
 
 def main():
     outfile_fpath = 'benchmark_data.csv'
-    data_to_get = ['param_time', 'num_cores', 'kernel_time', 'env_time', 'n', 'l', 'c', 'g', 'zeta', 'gather_time', 'num_structs']
+    data_to_get = ['param_time', 'num_cores', 'kernel_time', 'env_time', 'n', 'l', 'c', 'g', 'zeta', 'gather_time', 'num_structs', 'num_atoms']
     sort_by = 'n'
     num_decimal_places = 1
     soap_owds = file_utils.find(file_utils.os.getcwd(), 'n_*')

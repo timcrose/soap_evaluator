@@ -114,8 +114,14 @@ class SetUpParams():
         self.single_molecule_energy = eval(inst.get(sname, 'single_molecule_energy'))
         self.num_structures_to_use = inst.get_with_default(sname, 'num_structures_to_use', 'all')
         self.verbose = eval(inst.get_with_default(sname, 'verbose', 'True'))
+        self.max_mem = inst.get_with_default(sname, 'max_mem', 'all')
+        self.node_mem = float(inst.get_with_default(sname, 'node_mem', 128.0))
+        
         if self.num_structures_to_use != 'all':
             self.num_structures_to_use = int(self.num_structures_to_use)
+
+        if self.max_mem != 'all':
+            self.max_mem = float(self.max_mem)
         
         sname = 'calculate_kernel'
         self.lowmem = eval(inst.get_with_default(sname, 'lowmem', True))
@@ -476,7 +482,7 @@ def memory_estimate_for_kij(n, l, num_atoms_i, num_atoms_j, num_unique_species_i
     return mem_for_struct_pair
 
 
-def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_unique_species_arr, rank_hostnames):
+def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_unique_species_arr, rank_hostnames, max_mem='all', node_mem=128.0):
     '''
     kernel_tasks: np.array shape (num incomplete tasks, 2)
         Each row is a pair of structure indices that need their similarities evaluated.
@@ -495,6 +501,13 @@ def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_
 
     rank_hostnames: list, length: num ranks in comm
         Each row has the rank in columns 0 and that rank's hostname in column 1.
+
+    max_mem: str or float
+        If 'all', use all availble memory. If float, use a total of this much memory (possibly useful for
+        nodes with a small amount of fast memory). Units GB.
+
+    node_mem: float
+        Total RAM on each node. Units GB.
 
     Return:
         task_list_for_each_rank: list of list
@@ -535,9 +548,12 @@ def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_
         (num_ranks_per_node - l) ranks on this node, else increment l.
     '''
     unique_hostnames = list(set(rank_hostnames))
-    # kB units
-    # Assume all nodes have the same or greater available memory as the node with the root rank.
-    available_mem = dict(psutil.virtual_memory()._asdict())['available'] / 1024.0
+    if max_mem == 'all':
+        # kB units
+        # Assume all nodes have the same or greater available memory as the node with the root rank.
+        available_mem = dict(psutil.virtual_memory()._asdict())['available'] / 1024.0
+    else:
+        available_mem = max_mem  * (1024 ** 2) - (node_mem * (1024 ** 2) - dict(psutil.virtual_memory()._asdict())['available'] / 1024.0)
     
     kernel_tasks_for_hostnames = list_utils.split_up_list_evenly(kernel_tasks, len(unique_hostnames))
     task_list_for_each_rank = [[] for rank in range(len(rank_hostnames))]
@@ -551,7 +567,11 @@ def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_
         
         if np.all(num_atoms_arr_for_this_hostname == num_atoms_arr_for_this_hostname[0]) and np.all(num_unique_species_arr_for_this_hostname == num_unique_species_arr_for_this_hostname[0]):
             mem_for_struct_pair = memory_estimate_for_kij(n, l, num_atoms_arr_for_this_hostname[0], num_atoms_arr_for_this_hostname[0], num_unique_species_arr_for_this_hostname[0], num_unique_species_arr_for_this_hostname[0])
+            print('mem_for_struct_pair', mem_for_struct_pair)
+            print('num_ranks_with_this_hostname', num_ranks_with_this_hostname)
+            print('available_mem', available_mem)
             num_ranks_allowed = min([num_ranks_with_this_hostname, int(available_mem / mem_for_struct_pair)])
+            print('num_ranks_allowed', num_ranks_allowed)
         else:
             # Get memory estimate for each task assigned to this node
             task_mem_estimates = [memory_estimate_for_kij(n, l, num_atoms_arr[kernel_task[0]], num_atoms_arr[kernel_task[1]], num_unique_species_arr[kernel_task[0]], num_unique_species_arr[kernel_task[1]])
@@ -567,7 +587,7 @@ def get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_
                     num_ranks_allowed = num_partitions
                     break
                 num_partitions -= 1
-            if num_partitions == 0:
+            if num_partitions <= 0:
                 raise Exception('It appears that you would not have enough memory for even one rank to store enough memory for one pair of structures at a time',
                         'available_mem =', available_mem, 'max_simultaneous_mem_by_all_ranks_on_this_node =', max_simultaneous_mem_by_all_ranks_on_this_node)
 
@@ -774,7 +794,12 @@ def write_en_dat(wdir_path, data_files, out_fname, single_molecule_energy, energ
             num_unique_species_lst.append(len(set([struct['geometry'][i][3] for i in range(len(struct['geometry']))])))
             if energy_name in struct['properties']:
                 en=float(struct['properties'][energy_name])
-                nmpc = int(struct['properties']['nmpc'])
+                if 'nmpc' in struct['properties']:
+                    nmpc = int(struct['properties']['nmpc'])
+                elif 'Z' in struct['properties']:
+                    nmpc = int(struct['properties']['Z'])
+                else:
+                    raise Exception('Must have "nmpc" or "Z" as a property in your structure files indicating the number of molecules per unit cell')
                 energy = normalized_BE_by_napc(napc, nmpc, en, single_molecule_energy)
             else:
                 energy = 'none'
@@ -1134,7 +1159,7 @@ def soap_workflow(params):
             comm.barrier()
             if comm.rank == 0:
                 get_rank_tasks_start_time = time.time()
-                num_ranks_for_nodes = get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_unique_species_arr, rank_hostnames)
+                num_ranks_for_nodes = get_num_ranks_for_kernel_computation(kernel_tasks, n, l, num_atoms_arr, num_unique_species_arr, rank_hostnames, params.max_mem, params.node_mem)
                 rank_print(rank_output_path, 'num_ranks_for_nodes time', time.time() - get_rank_tasks_start_time)    
             else:
                 num_ranks_for_nodes  = None
@@ -1152,6 +1177,8 @@ def soap_workflow(params):
             breathing_room_factor = ranks_per_node * breathing_room_factor_per_node
             just_kernel_start_time = time.time()
             my_kernel_data = []
+            root_print(comm.rank, 'Beginning kernel calculation')
+            rank_print(rank_output_path, 'Beginning kernel calculation')
             for task_idx in range(len(kernel_tasks)):
                 if params.verbose:
                     rank_print(rank_output_path, 'computing task_idx for kernel', task_idx)
